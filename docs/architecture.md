@@ -115,3 +115,16 @@ Many strategies lost money or underperformed buy-and-hold, while high-return
 AMD/NVDA variants had drawdowns above 30%. No candidate is approved for live
 execution. The next validation must test stability by regime and compare
 risk-adjusted returns after funding and modeled OKX fills.
+
+## Shadow portfolio
+
+The paper ledger starts with 30 USDT and currently evaluates three deliberately
+small candidates: GOOGL daily trend, JNJ daily breakout, and MRK daily trend.
+It uses the latest OKX perpetual quote but never calls an order endpoint.
+
+Entries are evaluated once near the US market close. Each position is capped
+at 16% of initial virtual capital, with three candidates limiting aggregate
+target exposure below 50%. Simulated fills pay 5 bps fees and 10 bps adverse
+slippage on each side. A 5% shadow-account drawdown blocks new entries while
+exits remain available. Stale references, basis above 100 bps, SEC filings, and
+earnings windows also block entries.

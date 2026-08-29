@@ -8,8 +8,19 @@ const money = (value: string | null | undefined) =>
   value == null ? "—" : Number(value).toFixed(4);
 
 export default async function TradingDashboard() {
-  const { account, positions, decisions, news, heartbeat, basis, events, backtests } =
-    await dashboardData();
+  const {
+    account,
+    positions,
+    decisions,
+    news,
+    heartbeat,
+    basis,
+    events,
+    backtests,
+    shadowAccount,
+    shadowPositions,
+    shadowTrades,
+  } = await dashboardData();
   const stale = !heartbeat || Date.now() - new Date(heartbeat.last_seen_at).getTime() > 180_000;
 
   return (
@@ -33,6 +44,41 @@ export default async function TradingDashboard() {
         <Metric label="Available USDT" value={money(account?.available_usdt)} />
         <Metric label="Open positions" value={String(positions.length)} />
       </section>
+
+      <Section title="Shadow portfolio · no real orders">
+        <div className="mb-4 grid gap-3 sm:grid-cols-4">
+          <Metric label="Virtual equity" value={`${money(shadowAccount?.equity)} USDT`} />
+          <Metric label="Virtual cash" value={money(shadowAccount?.cash)} />
+          <Metric label="Realized PnL" value={money(shadowAccount?.realized_pnl)} />
+          <Metric label="Drawdown" value={`${money(shadowAccount?.drawdown_pct)}%`} />
+        </div>
+        {shadowPositions.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="text-xs text-neutral-500">
+                <tr><th>Instrument</th><th>Strategy</th><th>Quantity</th><th>Entry</th><th>Mark</th><th>PnL</th></tr>
+              </thead>
+              <tbody>
+                {shadowPositions.map((position) => (
+                  <tr key={position.instrument} className="border-t border-neutral-200 dark:border-neutral-800">
+                    <td className="py-2 font-medium">{position.instrument.replace("-USDT-SWAP", "")}</td>
+                    <td>{position.strategy.replace("daily-", "")}</td>
+                    <td>{position.quantity}</td>
+                    <td>{money(position.average_price)}</td>
+                    <td>{money(position.mark_price)}</td>
+                    <td>{money(position.unrealized_pnl)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : <Empty text="No virtual position yet; entries are evaluated near each US market close." />}
+        {shadowTrades.length > 0 && (
+          <p className="mt-3 text-xs text-neutral-500">
+            {shadowTrades.length} recent simulated fills · 5 bps fee + 10 bps adverse slippage per side
+          </p>
+        )}
+      </Section>
 
       <Section title="Open positions">
         {positions.length ? (

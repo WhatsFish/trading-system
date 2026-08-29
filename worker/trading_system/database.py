@@ -198,7 +198,10 @@ class Database:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT reference_stale, basis_bps
+                SELECT
+                  reference_stale
+                    OR NOW() - underlying_quoted_at > INTERVAL '20 minutes',
+                  basis_bps
                 FROM basis_snapshot
                 WHERE instrument = %s
                 ORDER BY ts DESC LIMIT 1

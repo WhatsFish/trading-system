@@ -172,6 +172,63 @@ CREATE TABLE IF NOT EXISTS backtest_result (
 CREATE INDEX IF NOT EXISTS backtest_result_recent
   ON backtest_result (symbol, strategy, generated_at DESC);
 
+CREATE TABLE IF NOT EXISTS shadow_account (
+  id            SMALLINT    PRIMARY KEY CHECK (id = 1),
+  initial_cash  NUMERIC     NOT NULL,
+  cash          NUMERIC     NOT NULL,
+  realized_pnl  NUMERIC     NOT NULL DEFAULT 0,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO shadow_account (id, initial_cash, cash)
+VALUES (1, 30, 30)
+ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS shadow_position (
+  instrument  TEXT        PRIMARY KEY,
+  symbol      TEXT        NOT NULL,
+  strategy    TEXT        NOT NULL,
+  quantity    NUMERIC     NOT NULL CHECK (quantity > 0),
+  average_price NUMERIC   NOT NULL,
+  entry_fee   NUMERIC     NOT NULL,
+  opened_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS shadow_trade (
+  id            BIGSERIAL   PRIMARY KEY,
+  ts            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  instrument    TEXT        NOT NULL,
+  strategy      TEXT        NOT NULL,
+  side          TEXT        NOT NULL CHECK (side IN ('buy', 'sell')),
+  quantity      NUMERIC     NOT NULL,
+  market_price  NUMERIC     NOT NULL,
+  execution_price NUMERIC   NOT NULL,
+  fee           NUMERIC     NOT NULL,
+  realized_pnl  NUMERIC,
+  reason        TEXT        NOT NULL
+);
+CREATE INDEX IF NOT EXISTS shadow_trade_recent ON shadow_trade (ts DESC);
+
+CREATE TABLE IF NOT EXISTS shadow_equity_snapshot (
+  id             BIGSERIAL   PRIMARY KEY,
+  ts             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  cash           NUMERIC     NOT NULL,
+  market_value   NUMERIC     NOT NULL,
+  equity         NUMERIC     NOT NULL,
+  realized_pnl   NUMERIC     NOT NULL,
+  unrealized_pnl NUMERIC     NOT NULL
+);
+CREATE INDEX IF NOT EXISTS shadow_equity_recent
+  ON shadow_equity_snapshot (ts DESC);
+
+CREATE TABLE IF NOT EXISTS shadow_run (
+  market_date DATE        PRIMARY KEY,
+  ran_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  status      TEXT        NOT NULL,
+  detail      JSONB       NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS worker_heartbeat (
   worker       TEXT PRIMARY KEY,
   last_seen_at TIMESTAMPTZ NOT NULL,

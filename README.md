@@ -56,3 +56,12 @@ out-of-sample comparisons:
 
 The `research` container has no OKX credentials. The credential-bearing
 `worker` image intentionally does not install `yfinance`.
+
+The shadow portfolio is marked every 15 minutes and may simulate fills only in
+the configured New York close window:
+
+```bash
+./scripts/run-shadow.sh
+```
+
+It maintains a separate 30 USDT virtual ledger and cannot send real orders.
