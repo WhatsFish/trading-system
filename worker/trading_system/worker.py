@@ -39,6 +39,9 @@ def run_cycle(settings: Settings, client: OkxClient, database: Database) -> None
             if instrument not in BY_INSTRUMENT:
                 raise ValueError(f"instrument is not in the equity allowlist: {instrument}")
             signal_result = equity_signal(candles)
+            reference_stale, basis_bps, event_risk = database.latest_reference_risk(
+                connection, instrument
+            )
             decision = evaluate(
                 settings=settings,
                 signal=signal_result,
@@ -47,6 +50,9 @@ def run_cycle(settings: Settings, client: OkxClient, database: Database) -> None
                 instrument_rule_type=details.get("ruleType", ""),
                 instrument_state=details.get("state", ""),
                 execution_enabled=execution_enabled,
+                reference_stale=reference_stale,
+                basis_bps=basis_bps,
+                event_risk=event_risk,
             )
             database.save_signal_and_risk(
                 connection,

@@ -5,6 +5,15 @@ import os
 from .universe import DEFAULT_INSTRUMENTS
 
 
+def database_url_from_env() -> str:
+    password = os.environ["TRADING_PG_PASSWORD"]
+    return (
+        f"postgresql://trading_system:{password}@"
+        f"{os.getenv('PG_HOST', 'db')}:{os.getenv('PG_PORT', '5432')}/"
+        "trading_system"
+    )
+
+
 @dataclass(frozen=True)
 class Settings:
     okx_key: str
@@ -20,19 +29,15 @@ class Settings:
     max_leverage: Decimal = Decimal("2")
     daily_loss_pct: Decimal = Decimal("0.02")
     max_drawdown_pct: Decimal = Decimal("0.05")
+    max_basis_bps: Decimal = Decimal("100")
 
     @classmethod
     def from_env(cls) -> "Settings":
-        password = os.environ["TRADING_PG_PASSWORD"]
         return cls(
             okx_key=os.environ["OKX_API_KEY"],
             okx_secret=os.environ["OKX_API_SECRET"],
             okx_passphrase=os.environ["OKX_API_PASSPHRASE"],
-            database_url=(
-                f"postgresql://trading_system:{password}@"
-                f"{os.getenv('PG_HOST', 'db')}:{os.getenv('PG_PORT', '5432')}/"
-                "trading_system"
-            ),
+            database_url=database_url_from_env(),
             mode=os.getenv("TRADING_MODE", "observe"),
             live_ack=os.getenv("LIVE_TRADING_ACK", ""),
             instruments=tuple(

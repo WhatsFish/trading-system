@@ -31,6 +31,45 @@ CREATE TABLE IF NOT EXISTS market_snapshot (
 CREATE INDEX IF NOT EXISTS market_snapshot_recent
   ON market_snapshot (instrument, ts DESC);
 
+CREATE TABLE IF NOT EXISTS underlying_daily (
+  symbol       TEXT        NOT NULL,
+  date         DATE        NOT NULL,
+  open         NUMERIC     NOT NULL,
+  high         NUMERIC     NOT NULL,
+  low          NUMERIC     NOT NULL,
+  close        NUMERIC     NOT NULL,
+  volume       BIGINT,
+  source       TEXT        NOT NULL,
+  ingested_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (symbol, date)
+);
+CREATE INDEX IF NOT EXISTS underlying_daily_recent
+  ON underlying_daily (symbol, date DESC);
+
+CREATE TABLE IF NOT EXISTS underlying_quote (
+  symbol       TEXT        NOT NULL,
+  quoted_at    TIMESTAMPTZ NOT NULL,
+  price        NUMERIC     NOT NULL,
+  source       TEXT        NOT NULL,
+  ingested_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (symbol, quoted_at)
+);
+CREATE INDEX IF NOT EXISTS underlying_quote_recent
+  ON underlying_quote (symbol, quoted_at DESC);
+
+CREATE TABLE IF NOT EXISTS basis_snapshot (
+  id                 BIGSERIAL   PRIMARY KEY,
+  instrument         TEXT        NOT NULL,
+  ts                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  perpetual_price    NUMERIC     NOT NULL,
+  underlying_price   NUMERIC     NOT NULL,
+  underlying_quoted_at TIMESTAMPTZ NOT NULL,
+  basis_bps          NUMERIC     NOT NULL,
+  reference_stale    BOOLEAN     NOT NULL
+);
+CREATE INDEX IF NOT EXISTS basis_snapshot_recent
+  ON basis_snapshot (instrument, ts DESC);
+
 CREATE TABLE IF NOT EXISTS account_snapshot (
   id              BIGSERIAL   PRIMARY KEY,
   ts              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -93,6 +132,46 @@ CREATE TABLE IF NOT EXISTS news_item (
 );
 CREATE INDEX IF NOT EXISTS news_item_recent ON news_item (published_at DESC);
 
+CREATE TABLE IF NOT EXISTS sec_filing (
+  accession_number TEXT        PRIMARY KEY,
+  symbol           TEXT        NOT NULL,
+  form             TEXT        NOT NULL,
+  filed_at         DATE        NOT NULL,
+  url              TEXT        NOT NULL,
+  ingested_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS sec_filing_recent
+  ON sec_filing (symbol, filed_at DESC);
+
+CREATE TABLE IF NOT EXISTS corporate_event (
+  symbol       TEXT        NOT NULL,
+  event_type   TEXT        NOT NULL,
+  starts_at    TIMESTAMPTZ NOT NULL,
+  source       TEXT        NOT NULL,
+  details      JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  ingested_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (symbol, event_type, starts_at, source)
+);
+CREATE INDEX IF NOT EXISTS corporate_event_upcoming
+  ON corporate_event (starts_at);
+
+CREATE TABLE IF NOT EXISTS backtest_result (
+  id                BIGSERIAL   PRIMARY KEY,
+  symbol            TEXT        NOT NULL,
+  strategy          TEXT        NOT NULL,
+  generated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  train_start       DATE        NOT NULL,
+  train_end         DATE        NOT NULL,
+  test_start        DATE        NOT NULL,
+  test_end          DATE        NOT NULL,
+  test_return_pct   NUMERIC     NOT NULL,
+  test_drawdown_pct NUMERIC     NOT NULL,
+  test_trades       INTEGER     NOT NULL,
+  assumptions       JSONB       NOT NULL
+);
+CREATE INDEX IF NOT EXISTS backtest_result_recent
+  ON backtest_result (symbol, strategy, generated_at DESC);
+
 CREATE TABLE IF NOT EXISTS worker_heartbeat (
   worker       TEXT PRIMARY KEY,
   last_seen_at TIMESTAMPTZ NOT NULL,
@@ -108,4 +187,3 @@ CREATE TABLE IF NOT EXISTS system_setting (
 INSERT INTO system_setting (key, value)
 VALUES ('execution_enabled', 'false')
 ON CONFLICT (key) DO NOTHING;
-

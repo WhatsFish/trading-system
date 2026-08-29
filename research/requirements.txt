@@ -1,1 +1,2 @@
 psycopg[binary]==3.2.9
+yfinance==1.3.0

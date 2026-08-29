@@ -46,6 +46,32 @@ export type Heartbeat = {
   detail: Record<string, string>;
 };
 
+export type Basis = {
+  instrument: string;
+  ts: Date;
+  perpetual_price: string;
+  underlying_price: string;
+  basis_bps: string;
+  reference_stale: boolean;
+};
+
+export type Event = {
+  symbol: string;
+  event_type: string;
+  starts_at: Date;
+  source: string;
+};
+
+export type Backtest = {
+  symbol: string;
+  strategy: string;
+  test_return_pct: string;
+  test_drawdown_pct: string;
+  test_trades: number;
+  test_start: Date;
+  test_end: Date;
+};
+
 export async function dashboardData() {
   const instruments = (process.env.TRADING_INSTRUMENTS ?? "")
     .split(",")
@@ -55,7 +81,7 @@ export async function dashboardData() {
     "SELECT id, ts, total_equity_usd, available_usdt FROM account_snapshot ORDER BY ts DESC LIMIT 1",
   );
   const account = accountRows[0] ?? null;
-  const [positions, decisions, news, heartbeat] = await Promise.all([
+  const [positions, decisions, news, heartbeat, basis, events, backtests] = await Promise.all([
     account
       ? query<Position>(
           "SELECT instrument, side, size, average_price, mark_price, leverage, notional_usd, unrealized_pnl, liquidation_price, margin_mode FROM position_snapshot WHERE account_snapshot_id = $1 ORDER BY instrument",
@@ -77,6 +103,36 @@ export async function dashboardData() {
     query<Heartbeat>(
       "SELECT last_seen_at, status, detail FROM worker_heartbeat WHERE worker = 'collector'",
     ),
+    query<Basis>(
+      `SELECT DISTINCT ON (instrument)
+         instrument, ts, perpetual_price, underlying_price, basis_bps, reference_stale
+       FROM basis_snapshot
+       WHERE instrument = ANY($1::text[])
+       ORDER BY instrument, ts DESC`,
+      [instruments],
+    ),
+    query<Event>(
+      `SELECT symbol, event_type, starts_at, source
+       FROM corporate_event
+       WHERE starts_at BETWEEN NOW() - INTERVAL '1 day' AND NOW() + INTERVAL '30 days'
+       ORDER BY starts_at LIMIT 20`,
+    ),
+    query<Backtest>(
+      `SELECT DISTINCT ON (symbol, strategy)
+         symbol, strategy, test_return_pct, test_drawdown_pct, test_trades,
+         test_start, test_end
+       FROM backtest_result
+       ORDER BY symbol, strategy, generated_at DESC`,
+    ),
   ]);
-  return { account, positions, decisions, news, heartbeat: heartbeat[0] ?? null };
+  return {
+    account,
+    positions,
+    decisions,
+    news,
+    basis,
+    events,
+    backtests,
+    heartbeat: heartbeat[0] ?? null,
+  };
 }

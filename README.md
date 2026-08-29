@@ -46,3 +46,13 @@ docker compose exec worker sh -lc \
 Backtest output is evidence about a historical sample, not permission to trade.
 Use walk-forward/out-of-sample validation and shadow operation before enabling
 even a small live allocation.
+
+Refresh the isolated underlying/SEC research layer and its multi-window
+out-of-sample comparisons:
+
+```bash
+./scripts/run-research.sh
+```
+
+The `research` container has no OKX credentials. The credential-bearing
+`worker` image intentionally does not install `yfinance`.

@@ -8,7 +8,8 @@ const money = (value: string | null | undefined) =>
   value == null ? "—" : Number(value).toFixed(4);
 
 export default async function TradingDashboard() {
-  const { account, positions, decisions, news, heartbeat } = await dashboardData();
+  const { account, positions, decisions, news, heartbeat, basis, events, backtests } =
+    await dashboardData();
   const stale = !heartbeat || Date.now() - new Date(heartbeat.last_seen_at).getTime() > 180_000;
 
   return (
@@ -72,6 +73,64 @@ export default async function TradingDashboard() {
         </div>
       </Section>
 
+      <Section title="OKX vs underlying">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="text-xs text-neutral-500">
+              <tr><th>Symbol</th><th>OKX</th><th>Underlying</th><th>Basis</th><th>Reference</th></tr>
+            </thead>
+            <tbody>
+              {basis.map((item) => (
+                <tr key={item.instrument} className="border-t border-neutral-200 dark:border-neutral-800">
+                  <td className="py-2 font-medium">{item.instrument.replace("-USDT-SWAP", "")}</td>
+                  <td>{money(item.perpetual_price)}</td>
+                  <td>{money(item.underlying_price)}</td>
+                  <td>{Number(item.basis_bps).toFixed(1)} bps</td>
+                  <td className={item.reference_stale ? "text-amber-600" : "text-emerald-600"}>
+                    {item.reference_stale ? "stale" : "fresh"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!basis.length && <Empty text="Waiting for underlying reference data." />}
+        </div>
+      </Section>
+
+      <Section title="Out-of-sample daily backtests">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="text-xs text-neutral-500">
+              <tr><th>Symbol</th><th>Strategy</th><th>Return</th><th>Max drawdown</th><th>Trades</th></tr>
+            </thead>
+            <tbody>
+              {backtests.map((item) => (
+                <tr key={`${item.symbol}-${item.strategy}`} className="border-t border-neutral-200 dark:border-neutral-800">
+                  <td className="py-2 font-medium">{item.symbol}</td>
+                  <td>{item.strategy.replace("daily-", "")}</td>
+                  <td>{Number(item.test_return_pct).toFixed(2)}%</td>
+                  <td>{Number(item.test_drawdown_pct).toFixed(2)}%</td>
+                  <td>{item.test_trades}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!backtests.length && <Empty text="Waiting for long-history research." />}
+        </div>
+      </Section>
+
+      <Section title="Upcoming event risk">
+        <div className="divide-y divide-neutral-200 dark:divide-neutral-800">
+          {events.map((event) => (
+            <div key={`${event.symbol}-${event.event_type}-${event.starts_at}`} className="flex justify-between py-2 text-sm">
+              <span><strong>{event.symbol}</strong> · {event.event_type}</span>
+              <span className="text-neutral-500">{new Date(event.starts_at).toLocaleDateString()}</span>
+            </div>
+          ))}
+          {!events.length && <Empty text="No scheduled events in the next 30 days." />}
+        </div>
+      </Section>
+
       <Section title="Market news">
         <div className="divide-y divide-neutral-200 dark:divide-neutral-800">
           {news.map((item) => (
@@ -109,4 +168,3 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function Empty({ text }: { text: string }) {
   return <p className="text-sm text-neutral-500">{text}</p>;
 }
-

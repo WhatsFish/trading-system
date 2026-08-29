@@ -12,6 +12,18 @@ services:
       TRADING_MODE: observe
       LIVE_TRADING_ACK: ""
 
+  research:
+    build:
+      context: .
+      dockerfile: research/Dockerfile
+    image: trading-system-research
+    restart: unless-stopped
+    environment:
+      PG_HOST: db
+      PG_PORT: "5432"
+      TRADING_PG_PASSWORD: ${TRADING_PG_PASSWORD}
+      EDGAR_UA: ${EDGAR_UA}
+
   web:
     build: ./web
     image: trading-system-web

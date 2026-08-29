@@ -58,6 +58,23 @@ Future model analysis should summarize deduplicated, relevant events at a
 slower cadence and produce structured evidence. It may adjust confidence or
 block a trade, but it may not bypass deterministic risk controls.
 
+## Underlying and event data
+
+The research layer stores five years of daily underlying prices, periodic
+underlying quotes, OKX-versus-underlying basis, material SEC filings, and
+earnings dates. Entry decisions are blocked when the reference quote is more
+than 20 minutes old, absolute basis exceeds 100 bps, or a corporate-event
+window is active. These entry controls never block a risk-reducing exit.
+
+`yfinance` is an unofficial, best-effort research source without an execution
+SLA. It must be replaced or independently confirmed by a licensed real-time
+feed before live entry decisions are enabled.
+
+Research runs in a separate container that receives PostgreSQL credentials but
+no OKX API key, secret, or passphrase. The smaller exchange worker does not
+install `yfinance`; this limits the credential-bearing process's dependency
+and network surface.
+
 ## Baseline result
 
 The original crypto baseline has been retired at the operator's direction.
@@ -84,3 +101,17 @@ MRK had only 574 candles after its recent listing and produced no trades.
 The generally negative results reject this baseline for live use. They are
 pipeline evidence, not permission for execution, and future strategy work must
 use longer walk-forward samples rather than tune against this one window.
+
+## Five-year daily research
+
+The research job compares three fixed long/flat strategies against buy-and-hold
+over three chronological out-of-sample windows after an initial 50% history
+window. The first run identified GOOGL daily trend (140.21% return, 8.80%
+maximum fold drawdown), MRK daily trend (37.76%, 10.67%), and JNJ daily
+breakout (42.65%, 9.84%) as research candidates. These are not annualized
+figures and do not include OKX funding or a full execution-slippage model.
+
+Many strategies lost money or underperformed buy-and-hold, while high-return
+AMD/NVDA variants had drawdowns above 30%. No candidate is approved for live
+execution. The next validation must test stability by regime and compare
+risk-adjusted returns after funding and modeled OKX fills.

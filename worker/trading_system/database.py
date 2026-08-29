@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 from decimal import Decimal
 
@@ -139,6 +140,90 @@ class Database:
             )
             row = cursor.fetchone()
         return bool(row and row[0] == "true")
+
+    def save_reference_quotes(
+        self,
+        connection: psycopg.Connection,
+        quotes: dict,
+        perpetual_prices: dict[str, Decimal],
+    ) -> None:
+        now = dt.datetime.now(dt.timezone.utc)
+        with connection.cursor() as cursor:
+            for symbol, (quoted_at, price) in quotes.items():
+                cursor.execute(
+                    """
+                    INSERT INTO underlying_quote
+                      (symbol, quoted_at, price, source)
+                    VALUES (%s, %s, %s, 'yfinance')
+                    ON CONFLICT (symbol, quoted_at) DO UPDATE SET
+                      price = EXCLUDED.price, ingested_at = NOW()
+                    """,
+                    (symbol, quoted_at, price),
+                )
+                instrument = f"{symbol}-USDT-SWAP"
+                perpetual = perpetual_prices.get(instrument)
+                if perpetual is None or price <= 0:
+                    continue
+                age = (now - quoted_at).total_seconds()
+                basis_bps = (perpetual / price - 1) * Decimal("10000")
+                cursor.execute(
+                    """
+                    INSERT INTO basis_snapshot
+                      (instrument, perpetual_price, underlying_price,
+                       underlying_quoted_at, basis_bps, reference_stale)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (instrument, perpetual, price, quoted_at, basis_bps, age > 1200),
+                )
+
+    def latest_perpetual_prices(
+        self, connection: psycopg.Connection
+    ) -> dict[str, Decimal]:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT DISTINCT ON (instrument) instrument, last_price
+                FROM market_snapshot
+                ORDER BY instrument, ts DESC
+                """
+            )
+            return {
+                instrument: Decimal(price) for instrument, price in cursor.fetchall()
+            }
+
+    def latest_reference_risk(
+        self, connection: psycopg.Connection, instrument: str
+    ) -> tuple[bool, Decimal | None, bool]:
+        symbol = instrument.split("-", 1)[0]
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT reference_stale, basis_bps
+                FROM basis_snapshot
+                WHERE instrument = %s
+                ORDER BY ts DESC LIMIT 1
+                """,
+                (instrument,),
+            )
+            basis = cursor.fetchone()
+            cursor.execute(
+                """
+                SELECT EXISTS (
+                  SELECT 1 FROM corporate_event
+                  WHERE symbol = %s
+                    AND starts_at BETWEEN NOW() - INTERVAL '6 hours'
+                                      AND NOW() + INTERVAL '24 hours'
+                ) OR EXISTS (
+                  SELECT 1 FROM sec_filing
+                  WHERE symbol = %s AND filed_at >= CURRENT_DATE - 1
+                )
+                """,
+                (symbol, symbol),
+            )
+            event_risk = bool(cursor.fetchone()[0])
+        if not basis:
+            return True, None, event_risk
+        return bool(basis[0]), Decimal(basis[1]), event_risk
 
     def save_signal_and_risk(
         self,
