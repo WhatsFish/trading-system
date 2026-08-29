@@ -1,0 +1,31 @@
+services:
+  worker:
+    build: ./worker
+    image: trading-system-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+      - /home/liharr/.config/trading-system.env
+    environment:
+      PG_HOST: db
+      PG_PORT: "5432"
+      TRADING_MODE: observe
+      LIVE_TRADING_ACK: ""
+
+  web:
+    build: ./web
+    image: trading-system-web
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PG_HOST: db
+      PG_PORT: "5432"
+      PG_USER: trading_system
+      PG_DB: trading_system
+    ports:
+      - "127.0.0.1:3014:3000"
+
+networks:
+  default:
+    name: traffic-monitor_default
+    external: true

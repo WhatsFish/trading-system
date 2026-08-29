@@ -1,0 +1,2 @@
+"""Trading system worker package."""
+

@@ -1,0 +1,35 @@
+# Trading System
+
+A 24/7, audit-first OKX trading research system. It collects market and
+account data, evaluates deterministic strategies, enforces hard risk limits,
+and exposes a private dashboard.
+
+The default and deployed mode is `observe`: decisions are recorded, but no
+orders are sent. Live execution requires explicit code review, successful
+backtests, shadow operation, and two independent configuration gates.
+
+## Architecture
+
+- `worker/`: Python collector, strategy engine, risk engine, and backtester
+- `web/`: private Next.js dashboard
+- `db/`: PostgreSQL schema and idempotent bootstrap
+- Shared Postgres and Docker network used by the other services on this VM
+
+## Safety model
+
+- No withdrawal endpoint exists in the codebase.
+- The web container never receives OKX credentials.
+- Pre-market instruments are blocked.
+- Position, leverage, daily-loss, drawdown, stale-data, and cooldown limits
+  are deterministic and cannot be overridden by a strategy or LLM.
+- `TRADING_MODE=observe` and `LIVE_TRADING_ACK` form separate execution gates.
+- Monthly return is an evaluation target, never a guaranteed result or a
+  reason to force a trade.
+
+## Local checks
+
+```bash
+python3 -m unittest discover -s worker/tests -v
+docker compose build
+```
+
