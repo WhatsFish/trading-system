@@ -47,6 +47,10 @@ export type Heartbeat = {
 };
 
 export async function dashboardData() {
+  const instruments = (process.env.TRADING_INSTRUMENTS ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
   const accountRows = await query<Account>(
     "SELECT id, ts, total_equity_usd, available_usdt FROM account_snapshot ORDER BY ts DESC LIMIT 1",
   );
@@ -63,7 +67,9 @@ export async function dashboardData() {
          s.instrument, s.ts, s.action, s.confidence, s.reference_price,
          s.rationale, r.approved, r.mode, r.proposed_notional, r.reasons
        FROM strategy_signal s JOIN risk_decision r ON r.signal_id = s.id
+       WHERE s.instrument = ANY($1::text[])
        ORDER BY s.instrument, s.ts DESC`,
+      [instruments],
     ),
     query<News>(
       "SELECT source, published_at, title, url FROM news_item ORDER BY published_at DESC NULLS LAST LIMIT 12",
@@ -74,4 +80,3 @@ export async function dashboardData() {
   ]);
   return { account, positions, decisions, news, heartbeat: heartbeat[0] ?? null };
 }
-

@@ -1,19 +1,27 @@
 import datetime as dt
 import email.utils
 import html
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
 
-FEEDS = {
-    "CoinDesk": "https://www.coindesk.com/arc/outboundfeeds/rss/",
-    "Cointelegraph": "https://cointelegraph.com/rss",
+QUERIES = {
+    "US Tech": "NVDA OR AMD OR Microsoft OR Apple OR Amazon OR Alphabet OR Meta OR Broadcom stock",
+    "US Healthcare": "Eli Lilly OR Merck OR Johnson Johnson OR UnitedHealth stock",
+    "US Indices": "Nasdaq 100 OR S&P 500 OR QQQ OR SPY stock market",
 }
 
 
 def fetch_news(limit_per_feed: int = 20) -> list[dict]:
     items: list[dict] = []
-    for source, url in FEEDS.items():
+    for source, query in QUERIES.items():
+        url = (
+            "https://news.google.com/rss/search?"
+            + urllib.parse.urlencode(
+                {"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"}
+            )
+        )
         request = urllib.request.Request(
             url, headers={"User-Agent": "trading-system/0.1"}
         )
@@ -58,4 +66,3 @@ def save_news(connection, items: list[dict]) -> int:
             )
             inserted += cursor.rowcount
     return inserted
-

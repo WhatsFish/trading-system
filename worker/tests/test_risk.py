@@ -16,7 +16,7 @@ class RiskTests(unittest.TestCase):
             database_url="x",
             mode="observe",
             live_ack="",
-            instruments=("BTC-USDT-SWAP",),
+            instruments=("SPY-USDT-SWAP",),
             poll_seconds=60,
         )
         self.signal = Signal("buy", Decimal("0.8"), Decimal("100"), {}, "trend")

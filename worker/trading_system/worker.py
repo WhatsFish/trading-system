@@ -8,7 +8,8 @@ from .database import Database
 from .news import fetch_news, save_news
 from .okx import OkxClient
 from .risk import evaluate
-from .strategy import trend_signal
+from .strategy import equity_signal
+from .universe import BY_INSTRUMENT
 
 
 logging.basicConfig(
@@ -35,7 +36,9 @@ def run_cycle(settings: Settings, client: OkxClient, database: Database) -> None
             details = client.instrument(instrument)
             database.save_candles(connection, instrument, candles)
             database.save_market(connection, instrument, ticker, details)
-            signal_result = trend_signal(candles)
+            if instrument not in BY_INSTRUMENT:
+                raise ValueError(f"instrument is not in the equity allowlist: {instrument}")
+            signal_result = equity_signal(candles)
             decision = evaluate(
                 settings=settings,
                 signal=signal_result,
@@ -46,7 +49,12 @@ def run_cycle(settings: Settings, client: OkxClient, database: Database) -> None
                 execution_enabled=execution_enabled,
             )
             database.save_signal_and_risk(
-                connection, instrument, signal_result, decision, settings.mode
+                connection,
+                instrument,
+                signal_result,
+                decision,
+                settings.mode,
+                "us-equity-session-trend-v1",
             )
         database.heartbeat(
             connection,
@@ -56,6 +64,7 @@ def run_cycle(settings: Settings, client: OkxClient, database: Database) -> None
                 "equityUsd": str(equity),
                 "exposureUsd": str(exposure),
                 "instrumentCount": len(settings.instruments),
+                "universe": "us-equity-perpetuals",
             },
         )
         connection.commit()
@@ -96,4 +105,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

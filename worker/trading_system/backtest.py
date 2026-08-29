@@ -2,7 +2,9 @@ import argparse
 from dataclasses import dataclass
 from decimal import Decimal
 
-from .strategy import trend_signal
+import datetime as dt
+
+from .strategy import equity_signal
 
 
 @dataclass
@@ -12,9 +14,15 @@ class Result:
     max_drawdown_pct: Decimal
 
 
-def run(closes: list[Decimal], fee_rate: Decimal) -> Result:
+def run(
+    closes: list[Decimal],
+    fee_rate: Decimal,
+    timestamps: list[dt.datetime] | None = None,
+) -> Result:
     if len(closes) < 120:
         raise ValueError("at least 120 candles are required")
+    if timestamps is not None and len(timestamps) != len(closes):
+        raise ValueError("timestamps and closes must have equal length")
     equity = Decimal("1")
     peak = equity
     max_drawdown = Decimal("0")
@@ -23,11 +31,30 @@ def run(closes: list[Decimal], fee_rate: Decimal) -> Result:
     candles: list[dict] = []
 
     for index, close in enumerate(closes):
-        candles.insert(0, {"close": str(close), "confirmed": True})
-        if len(candles) < 55:
+        timestamp = (
+            timestamps[index]
+            if timestamps is not None
+            else dt.datetime(2026, 8, 24, 14, 0, tzinfo=dt.timezone.utc)
+            + dt.timedelta(minutes=5 * index)
+        )
+        candles.insert(
+            0,
+            {
+                "close": str(close),
+                "confirmed": True,
+                "ts": int(timestamp.timestamp() * 1000),
+            },
+        )
+        if len(candles) < 60:
             continue
-        signal_result = trend_signal(candles[:100])
-        target = 1 if signal_result.action == "buy" else 0
+        signal_result = equity_signal(candles[:100], timestamp)
+        target = (
+            1
+            if signal_result.action == "buy"
+            else 0
+            if signal_result.action == "sell"
+            else position
+        )
         if index > 0 and position:
             equity *= close / closes[index - 1]
         if target != position:
@@ -54,13 +81,17 @@ def main() -> None:
     with psycopg.connect(args.database_url) as connection:
         rows = connection.execute(
             """
-            SELECT close FROM market_candle
+            SELECT ts, close FROM market_candle
             WHERE instrument = %s AND bar = '5m' AND confirmed
             ORDER BY ts
             """,
             (args.instrument,),
         ).fetchall()
-    result = run([Decimal(row[0]) for row in rows], args.fee_rate)
+    result = run(
+        [Decimal(row[1]) for row in rows],
+        args.fee_rate,
+        [row[0] for row in rows],
+    )
     print(
         f"trades={result.trades} return={result.return_pct:.2f}% "
         f"max_drawdown={result.max_drawdown_pct:.2f}%"

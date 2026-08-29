@@ -147,6 +147,7 @@ class Database:
         signal,
         decision,
         mode: str,
+        strategy: str,
     ) -> None:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -154,11 +155,12 @@ class Database:
                 INSERT INTO strategy_signal
                   (instrument, strategy, action, confidence, reference_price,
                    features, rationale)
-                VALUES (%s, 'ema-trend-v1', %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
                     instrument,
+                    strategy,
                     signal.action,
                     signal.confidence,
                     signal.reference_price,

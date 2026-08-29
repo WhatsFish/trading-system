@@ -1,8 +1,9 @@
 # Trading System
 
-A 24/7, audit-first OKX trading research system. It collects market and
-account data, evaluates deterministic strategies, enforces hard risk limits,
-and exposes a private dashboard.
+A 24/7, audit-first OKX US-equity-perpetual research system. It focuses on
+technology and healthcare leaders plus S&P 500/Nasdaq-100 ETFs, collects
+market and account data, evaluates session-aware deterministic strategies,
+enforces hard risk limits, and exposes a private dashboard.
 
 The default and deployed mode is `observe`: decisions are recorded, but no
 orders are sent. Live execution requires explicit code review, successful
@@ -38,7 +39,7 @@ Backfill and evaluate the deterministic baseline:
 ```bash
 docker compose exec worker python -m trading_system.backfill --days 30
 docker compose exec worker sh -lc \
-  'python -m trading_system.backtest BTC-USDT-SWAP --database-url \
+  'python -m trading_system.backtest SPY-USDT-SWAP --database-url \
   "postgresql://trading_system:${TRADING_PG_PASSWORD}@db:5432/trading_system"'
 ```
 

@@ -10,15 +10,22 @@ drawdown, and correct operation take priority over trade frequency or return.
 
 1. The worker polls OKX every minute for account state and 5-minute candles.
 2. It stores immutable account, position, market, news, and decision records.
-3. `ema-trend-v1` emits a reproducible baseline signal for BTC, ETH, and SOL.
+3. `us-equity-session-trend-v1` emits a reproducible long/flat baseline for
+   selected US equity-linked perpetuals.
 4. The risk engine evaluates the signal independently and records every block.
 5. The private dashboard displays positions, signals, blocks, and recent news.
 6. `/status` checks collector freshness, data accumulation, and the execution
    lock.
 
+The observation universe is SPY, QQQ, AAPL, AMZN, AMD, AVGO, GOOGL, META,
+MSFT, NVDA, JNJ, LLY, MRK, and UNH. These are USDT-settled derivatives, not
+shares and not claims on the underlying companies or ETFs.
+
 The first version intentionally uses REST polling rather than a complex
 WebSocket execution path. A one-minute observation cadence is sufficient for
-the current medium-horizon research strategy and is easier to audit.
+the current medium-horizon research strategy and is easier to audit. Signals
+are session-aware and force a flat target outside the liquid core of the US
+regular session; 24/7 availability does not imply 24/7 liquidity.
 
 ## Execution boundary
 
@@ -53,15 +60,27 @@ block a trade, but it may not bypass deterministic risk controls.
 
 ## Baseline result
 
-The first 30-day, 5-minute long/flat baseline run (including a 5 bps fee per
-position transition, before funding and modeled slippage) produced:
+The original crypto baseline has been retired at the operator's direction.
+The first 30-day equity-perpetual baseline includes a 5 bps fee on each
+position transition, but not funding or a full slippage model:
 
 | Instrument | Return | Maximum drawdown | Trades |
 | --- | ---: | ---: | ---: |
-| BTC-USDT-SWAP | 3.01% | 5.70% | 132 |
-| ETH-USDT-SWAP | 2.86% | 8.78% | 198 |
-| SOL-USDT-SWAP | -0.70% | 11.67% | 242 |
+| SPY | 0.42% | 1.45% | 20 |
+| QQQ | -1.11% | 2.69% | 32 |
+| AAPL | -1.32% | 3.29% | 46 |
+| AMZN | -2.23% | 5.41% | 58 |
+| AMD | -1.06% | 6.40% | 82 |
+| AVGO | -4.82% | 6.48% | 54 |
+| GOOGL | 1.40% | 3.32% | 44 |
+| META | -11.00% | 11.00% | 68 |
+| MSFT | 0.58% | 2.82% | 82 |
+| NVDA | -0.20% | 3.75% | 52 |
+| JNJ | -4.98% | 5.46% | 62 |
+| LLY | -3.05% | 4.68% | 56 |
+| UNH | -5.27% | 7.13% | 56 |
 
-This is pipeline validation, not strategy validation. The sample is short,
-the drawdowns are too large for the account, and the results do not justify
-live execution.
+MRK had only 574 candles after its recent listing and produced no trades.
+The generally negative results reject this baseline for live use. They are
+pipeline evidence, not permission for execution, and future strategy work must
+use longer walk-forward samples rather than tune against this one window.

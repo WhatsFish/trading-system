@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 import os
 
+from .universe import DEFAULT_INSTRUMENTS
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -37,10 +39,9 @@ class Settings:
                 item.strip()
                 for item in os.getenv(
                     "TRADING_INSTRUMENTS",
-                    "BTC-USDT-SWAP,ETH-USDT-SWAP,SOL-USDT-SWAP",
+                    ",".join(DEFAULT_INSTRUMENTS),
                 ).split(",")
                 if item.strip()
             ),
             poll_seconds=int(os.getenv("POLL_SECONDS", "60")),
         )
-
