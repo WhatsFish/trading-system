@@ -5,6 +5,10 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 
+def decimal_or_none(value: str | None) -> Decimal | None:
+    return Decimal(value) if value not in (None, "") else None
+
+
 class Database:
     def __init__(self, url: str) -> None:
         self.url = url
@@ -52,18 +56,17 @@ class Database:
                 INSERT INTO market_snapshot
                   (instrument, last_price, bid_price, ask_price, open_24h,
                    high_24h, low_24h, volume_24h, instrument_state, rule_type)
-                VALUES (%s, %s, NULLIF(%s, ''), NULLIF(%s, ''), NULLIF(%s, ''),
-                        NULLIF(%s, ''), NULLIF(%s, ''), NULLIF(%s, ''), %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     instrument,
                     ticker["last"],
-                    ticker.get("bidPx", ""),
-                    ticker.get("askPx", ""),
-                    ticker.get("open24h", ""),
-                    ticker.get("high24h", ""),
-                    ticker.get("low24h", ""),
-                    ticker.get("volCcy24h", ""),
+                    decimal_or_none(ticker.get("bidPx")),
+                    decimal_or_none(ticker.get("askPx")),
+                    decimal_or_none(ticker.get("open24h")),
+                    decimal_or_none(ticker.get("high24h")),
+                    decimal_or_none(ticker.get("low24h")),
+                    decimal_or_none(ticker.get("volCcy24h")),
                     details.get("state"),
                     details.get("ruleType"),
                 ),
@@ -103,21 +106,19 @@ class Database:
                       (account_snapshot_id, instrument, side, size, average_price,
                        mark_price, leverage, notional_usd, unrealized_pnl,
                        liquidation_price, margin_mode)
-                    VALUES (%s, %s, %s, %s, NULLIF(%s, ''), NULLIF(%s, ''),
-                            NULLIF(%s, ''), NULLIF(%s, ''), NULLIF(%s, ''),
-                            NULLIF(%s, ''), %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         snapshot_id,
                         row["instId"],
                         row.get("posSide", "net"),
                         size,
-                        row.get("avgPx", ""),
-                        row.get("markPx", ""),
-                        row.get("lever", ""),
-                        row.get("notionalUsd", ""),
-                        row.get("upl", ""),
-                        row.get("liqPx", ""),
+                        decimal_or_none(row.get("avgPx")),
+                        decimal_or_none(row.get("markPx")),
+                        decimal_or_none(row.get("lever")),
+                        decimal_or_none(row.get("notionalUsd")),
+                        decimal_or_none(row.get("upl")),
+                        decimal_or_none(row.get("liqPx")),
                         row.get("mgnMode"),
                     ),
                 )
@@ -196,4 +197,3 @@ class Database:
                 """,
                 (status, Jsonb(detail)),
             )
-
