@@ -33,3 +33,15 @@ python3 -m unittest discover -s worker/tests -v
 docker compose build
 ```
 
+Backfill and evaluate the deterministic baseline:
+
+```bash
+docker compose exec worker python -m trading_system.backfill --days 30
+docker compose exec worker sh -lc \
+  'python -m trading_system.backtest BTC-USDT-SWAP --database-url \
+  "postgresql://trading_system:${TRADING_PG_PASSWORD}@db:5432/trading_system"'
+```
+
+Backtest output is evidence about a historical sample, not permission to trade.
+Use walk-forward/out-of-sample validation and shadow operation before enabling
+even a small live allocation.

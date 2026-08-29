@@ -99,6 +99,26 @@ class OkxClient:
             for row in rows
         ]
 
+    def historical_candles(
+        self, instrument: str, after: int | None = None, limit: int = 100
+    ) -> list[dict]:
+        params = {"instId": instrument, "bar": "5m", "limit": str(limit)}
+        if after is not None:
+            params["after"] = str(after)
+        rows = self.request("GET", "/api/v5/market/history-candles", params)
+        return [
+            {
+                "ts": int(row[0]),
+                "open": row[1],
+                "high": row[2],
+                "low": row[3],
+                "close": row[4],
+                "volume": row[5],
+                "confirmed": row[8] == "1",
+            }
+            for row in rows
+        ]
+
     def ticker(self, instrument: str) -> dict:
         return self.request(
             "GET", "/api/v5/market/ticker", {"instId": instrument}
@@ -116,4 +136,3 @@ class OkxClient:
 
     def positions(self) -> list[dict]:
         return self.request("GET", "/api/v5/account/positions", private=True)
-
