@@ -101,6 +101,7 @@ export type LiveState = {
   controller_status: string | null;
   controller_seen_at: Date | null;
   managed_instrument: string | null;
+  managed_count: number;
 };
 
 export type LiveExperiment = {
@@ -193,12 +194,13 @@ export async function dashboardData() {
     ),
     query<Candidate>(
       `SELECT c.symbol, c.family, c.score, c.promoted_at,
-         e.parameters, e.return_pct, e.drawdown_pct,
+         e.parameters, e.holdout_return_pct AS return_pct,
+         e.holdout_drawdown_pct AS drawdown_pct,
          e.positive_folds, e.trades, e.live_experience_count,
          e.live_adjustment, e.current_target
        FROM strategy_candidate c
        JOIN strategy_experiment e ON e.id = c.experiment_id
-       ORDER BY c.score DESC LIMIT 20`,
+       ORDER BY c.score DESC LIMIT 100`,
     ),
     query<ExecutionAudit>(
       `SELECT ts, instrument, action, requested_size, requested_price, state
@@ -210,7 +212,8 @@ export async function dashboardData() {
                    WHERE key = 'execution_enabled'), false) AS execution_enabled,
          h.status AS controller_status,
          h.last_seen_at AS controller_seen_at,
-         h.detail->>'managedInstrument' AS managed_instrument
+         h.detail->>'managedInstrument' AS managed_instrument,
+         COALESCE((h.detail->>'managedCount')::int, 0) AS managed_count
        FROM (SELECT 1) seed
        LEFT JOIN worker_heartbeat h ON h.worker = 'live-controller'`,
     ),

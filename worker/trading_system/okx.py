@@ -130,12 +130,28 @@ class OkxClient:
             "GET", "/api/v5/market/ticker", {"instId": instrument}
         )[0]
 
+    def tickers(self, instrument_type: str = "SWAP") -> dict[str, dict]:
+        rows = self.request(
+            "GET",
+            "/api/v5/market/tickers",
+            {"instType": instrument_type},
+        )
+        return {row["instId"]: row for row in rows}
+
     def instrument(self, instrument: str) -> dict:
         return self.request(
             "GET",
             "/api/v5/public/instruments",
             {"instType": "SWAP", "instId": instrument},
         )[0]
+
+    def instruments(self, instrument_type: str = "SWAP") -> dict[str, dict]:
+        rows = self.request(
+            "GET",
+            "/api/v5/public/instruments",
+            {"instType": instrument_type},
+        )
+        return {row["instId"]: row for row in rows}
 
     def account_balance(self) -> dict:
         return self.request("GET", "/api/v5/account/balance", private=True)[0]

@@ -24,8 +24,8 @@ class Settings:
     live_ack: str
     instruments: tuple[str, ...]
     poll_seconds: int
-    max_position_pct: Decimal = Decimal("0.35")
-    max_total_exposure_pct: Decimal = Decimal("1.50")
+    max_position_pct: Decimal = Decimal("0.18")
+    max_total_exposure_pct: Decimal = Decimal("2.00")
     max_leverage: Decimal = Decimal("1")
     daily_loss_pct: Decimal = Decimal("0.10")
     max_drawdown_pct: Decimal = Decimal("0.20")

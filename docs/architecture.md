@@ -126,11 +126,11 @@ Historical shadow records are retained rather than deleted.
 
 ## Continuous strategy lab
 
-Every weekday research run evaluates 420 bounded parameter combinations across
-trend, breakout, and mean-reversion families. Each experiment is evaluated on
-three chronological out-of-sample folds with a conservative 15 bps transition
-cost. Candidates require at least two positive folds, six transitions,
-drawdown no greater than 15%, and a positive `return - 2 * drawdown` score.
+Every weekday research run evaluates 12,300 bounded configurations: 246
+parameter specifications from 27 distinct families across 50 instruments.
+Parameters are selected using two chronological validation folds, then must
+pass a third untouched holdout fold. The simulator shifts close-derived signals
+to the next open and applies a conservative 15 bps cost per transition.
 Failures and rejection reasons remain in the audit database.
 
 This is continuous evaluation, not unconstrained self-modifying code. The
@@ -172,17 +172,20 @@ underlying reference, basis, corporate-event, account-exposure, daily-loss,
 and drawdown checks all pass. A 7x24 exchange venue does not override stale
 underlying-market checks.
 
-When no system position is open, the controller scans the entire eligible
-candidate pool every minute in descending risk-adjusted score order. It
+When portfolio capacity is available, the controller scans the best eligible
+candidate per symbol every minute in descending risk-adjusted score order. It
 recalculates each candidate's current long/flat target, skips flat candidates,
 and continues past candidate-specific risk blocks until it finds the first
-approved long target. It stops after one accepted attempt because the account
-policy permits only one managed position.
+approved long targets until five slots are filled. It caps both asset groups
+and strategy clusters at two positions.
 
-The experimental account sizing policy authorizes up to 35% of current equity
-for one 1x isolated position and caps total account nominal exposure at 150%
-of equity. New entries stop after a 10% daily equity loss or 20% peak-to-current
-drawdown. These are exploration limits, not return targets.
+The experimental account sizing policy authorizes up to 18% of current equity
+per 1x isolated position and caps total account nominal exposure at 200% of
+equity, including manual positions. New entries stop after a 10% daily equity
+loss or 20% peak-to-current drawdown. A full five-position portfolio replaces
+at most one incumbent per cycle: the challenger must exceed the weakest entry
+score by 10 points, the incumbent must be at least one day old, and the exact
+challenger is reserved and revalidated before entry.
 
 Every filled entry creates a durable live experiment with its hypothesis,
 strategy version and parameters, reference price, basis, event context, fees,

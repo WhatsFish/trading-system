@@ -6,6 +6,7 @@ import logging
 import signal
 import time
 import uuid
+from collections import Counter
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -14,7 +15,8 @@ from .executor import Executor, OrderIntent, floor_step
 from .okx import OkxClient, OkxError
 from .risk import evaluate
 from .strategy import Signal
-from .strategy_lab import parameter_targets
+from .strategy_library import StrategySpec, generate_targets
+from .universe import BY_INSTRUMENT
 
 if TYPE_CHECKING:
     from .database import Database
@@ -62,29 +64,142 @@ def desired_action(
     return "hold"
 
 
-def candidate_target(connection, symbol: str, family: str, parameters: dict) -> int:
+def portfolio_candidate_allowed(
+    candidate: dict,
+    held_symbols: set[str],
+    cluster_counts: Counter,
+    group_counts: Counter,
+) -> bool:
+    symbol = candidate["symbol"]
+    instrument = f"{symbol}-USDT-SWAP"
+    return (
+        symbol not in held_symbols
+        and instrument in BY_INSTRUMENT
+        and cluster_counts[candidate["cluster"]] < 2
+        and group_counts[BY_INSTRUMENT[instrument].group] < 2
+    )
+
+
+def replacement_allowed(
+    challenger_score: Decimal,
+    incumbent_score: Decimal,
+    incumbent_opened_at: dt.datetime,
+    now: dt.datetime,
+) -> bool:
+    return (
+        now - incumbent_opened_at >= dt.timedelta(days=1)
+        and challenger_score >= incumbent_score + Decimal("10")
+    )
+
+
+def candidate_target(
+    connection,
+    symbol: str,
+    family: str,
+    parameters: dict,
+    cluster: str = "legacy",
+) -> int:
     rows = connection.execute(
-        "SELECT date, close FROM underlying_daily WHERE symbol = %s ORDER BY date",
+        """
+        SELECT date, open, high, low, close, volume
+        FROM underlying_daily WHERE symbol = %s ORDER BY date
+        """,
         (symbol,),
     ).fetchall()
     if not rows:
         return 0
-    closes = [Decimal(row[1]) for row in rows]
-    quote = connection.execute(
+    bars = [
+        {
+            "date": row[0],
+            "open": str(row[1]),
+            "high": str(row[2]),
+            "low": str(row[3]),
+            "close": str(row[4]),
+            "volume": str(row[5] or 0),
+        }
+        for row in rows
+    ]
+    benchmark_rows = connection.execute(
         """
-        SELECT underlying_quoted_at::date, underlying_price
-        FROM basis_snapshot
-        WHERE instrument = %s
-        ORDER BY ts DESC LIMIT 1
-        """,
-        (f"{symbol}-USDT-SWAP",),
+        SELECT date, open, high, low, close, volume
+        FROM underlying_daily WHERE symbol = 'SPY' ORDER BY date
+        """
+    ).fetchall()
+    benchmark_by_date = {
+        row[0]: {
+            "date": row[0],
+            "open": str(row[1]),
+            "high": str(row[2]),
+            "low": str(row[3]),
+            "close": str(row[4]),
+            "volume": str(row[5] or 0),
+        }
+        for row in benchmark_rows
+    }
+    benchmark = [benchmark_by_date.get(row["date"], row) for row in bars]
+    if family in {"trend", "breakout", "mean-reversion"}:
+        closes = [Decimal(row["close"]) for row in bars]
+        if family == "trend":
+            translated = StrategySpec(
+                "sma-trend", "slow-trend", parameters
+            )
+            return generate_targets(bars, translated, benchmark)[-1]
+        if family == "breakout":
+            translated = StrategySpec(
+                "donchian-breakout", "breakout", parameters
+            )
+            return generate_targets(bars, translated, benchmark)[-1]
+        lookback = int(parameters["lookback"])
+        threshold = Decimal(int(parameters["thresholdBps"])) / Decimal("10000")
+        position = 0
+        for index in range(max(100, lookback), len(closes)):
+            average = sum(closes[index - lookback : index]) / lookback
+            regime = closes[index] > sum(closes[index - 100 : index]) / 100
+            if not position and regime and closes[index] < average * (1 - threshold):
+                position = 1
+            elif position and closes[index] >= average:
+                position = 0
+        return position
+    return generate_targets(
+        bars,
+        StrategySpec(family, cluster, parameters),
+        benchmark,
+    )[-1]
+
+
+def load_replacement_reservation(connection) -> dict | None:
+    connection.execute(
+        "DELETE FROM replacement_reservation WHERE expires_at <= NOW()"
+    )
+    row = connection.execute(
+        """
+        SELECT r.symbol, r.family, r.cluster, r.parameters, r.score,
+               r.incumbent_instrument, COALESCE(t.current_target, 0)
+        FROM replacement_reservation r
+        LEFT JOIN strategy_live_target t
+          ON t.symbol = r.symbol AND t.family = r.family
+         AND t.parameters = r.parameters
+         AND t.computed_at > NOW() - INTERVAL '4 days'
+        WHERE r.id = 1
+        """
     ).fetchone()
-    if quote and quote[0] >= rows[-1][0]:
-        if quote[0] == rows[-1][0]:
-            closes[-1] = Decimal(quote[1])
-        else:
-            closes.append(Decimal(quote[1]))
-    return parameter_targets(closes, family, parameters)[-1]
+    if not row:
+        return None
+    return {
+        "symbol": row[0],
+        "family": row[1],
+        "cluster": row[2],
+        "parameters": row[3],
+        "score": str(row[4]),
+        "incumbentInstrument": row[5],
+        "current_target": int(row[6]),
+    }
+
+
+def clear_replacement_reservation(database: Database) -> None:
+    with database.connect() as connection:
+        connection.execute("DELETE FROM replacement_reservation WHERE id = 1")
+        connection.commit()
 
 
 def account_metrics(connection, account: dict, positions: list[dict]) -> tuple:
@@ -123,6 +238,7 @@ def record_decision(
     account: dict,
     positions: list[dict],
     details: dict,
+    candidate_context: dict | None = None,
 ) -> tuple[int, bool, tuple[str, ...], Decimal]:
     with database.connect() as connection:
         stale, basis, event_risk = database.latest_reference_risk(
@@ -136,7 +252,14 @@ def record_decision(
             action=action,
             confidence=Decimal("1"),
             reference_price=price,
-            features={"parameters": json.dumps(parameters, sort_keys=True)},
+            features={
+                "parameters": json.dumps(parameters, sort_keys=True),
+                "score": str((candidate_context or {}).get("score", "0")),
+                "cluster": (candidate_context or {}).get("cluster", "legacy"),
+                "assetGroup": BY_INSTRUMENT.get(instrument).group
+                if instrument in BY_INSTRUMENT
+                else "unknown",
+            },
             rationale=f"Continuous strategy lab target from {strategy}.",
         )
         decision = evaluate(
@@ -214,12 +337,17 @@ def recover_incomplete_entries(
                     INSERT INTO live_position
                       (instrument, strategy, entry_order_id,
                        entry_client_order_id, owned_quantity, average_price,
-                       strategy_parameters)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        strategy_parameters, entry_score, strategy_cluster,
+                        asset_group, replacement_eligible)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
                     ON CONFLICT (instrument) DO UPDATE SET
                       owned_quantity = EXCLUDED.owned_quantity,
                       average_price = EXCLUDED.average_price,
                       strategy_parameters = EXCLUDED.strategy_parameters,
+                      entry_score = EXCLUDED.entry_score,
+                      strategy_cluster = EXCLUDED.strategy_cluster,
+                      asset_group = EXCLUDED.asset_group,
+                      replacement_eligible = TRUE,
                       updated_at = NOW()
                     """,
                     (
@@ -230,6 +358,9 @@ def recover_incomplete_entries(
                         filled,
                         Decimal(order["avgPx"]),
                         Jsonb(parameters),
+                        Decimal(features.get("score", "0")),
+                        features.get("cluster", "legacy"),
+                        features.get("assetGroup", "unknown"),
                     ),
                 )
                 basis = connection.execute(
@@ -922,19 +1053,58 @@ def load_candidates(connection, managed: dict | None) -> list[dict]:
         symbol = managed["instrument"].split("-", 1)[0]
         if not managed.get("strategy_parameters"):
             return []
+        parameter_key = json.dumps(
+            managed["strategy_parameters"],
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        target_row = connection.execute(
+            """
+            SELECT current_target FROM strategy_live_target
+            WHERE symbol = %s AND family = %s AND parameter_key = %s
+              AND computed_at > NOW() - INTERVAL '4 days'
+            """,
+            (symbol, managed["strategy"], parameter_key),
+        ).fetchone()
+        target = int(target_row[0]) if target_row else 0
+        if not target_row and managed["strategy"] in {
+            "trend",
+            "breakout",
+            "mean-reversion",
+        }:
+            target = candidate_target(
+                connection,
+                symbol,
+                managed["strategy"],
+                managed["strategy_parameters"],
+                managed["strategy_cluster"],
+            )
         return [
             {
                 "symbol": symbol,
                 "family": managed["strategy"],
                 "parameters": managed["strategy_parameters"],
+                "cluster": managed["strategy_cluster"],
+                "current_target": target,
             }
         ]
     rows = connection.execute(
         """
-        SELECT e.symbol, e.family, e.parameters, c.score
-        FROM strategy_candidate c
-        JOIN strategy_experiment e ON e.id = c.experiment_id
-        ORDER BY c.score DESC
+        SELECT symbol, family, parameters, score, cluster, current_target
+        FROM (
+          SELECT DISTINCT ON (e.symbol)
+            e.symbol, e.family, e.parameters, c.score, e.cluster,
+            t.current_target
+          FROM strategy_candidate c
+          JOIN strategy_experiment e ON e.id = c.experiment_id
+          JOIN strategy_live_target t
+            ON t.symbol = e.symbol AND t.family = e.family
+           AND t.parameters = e.parameters
+           AND t.computed_at > NOW() - INTERVAL '4 days'
+          ORDER BY e.symbol, t.current_target DESC, c.score DESC
+        ) best_per_symbol
+        ORDER BY score DESC
+        LIMIT 50
         """
     ).fetchall()
     return [
@@ -943,6 +1113,8 @@ def load_candidates(connection, managed: dict | None) -> list[dict]:
             "family": row[1],
             "parameters": row[2],
             "score": str(row[3]),
+            "cluster": row[4],
+            "current_target": int(row[5]),
         }
         for row in rows
     ]
@@ -956,18 +1128,12 @@ def attempt_entry(
     candidate: dict,
     account: dict,
     positions: list[dict],
+    execute: bool = True,
 ) -> tuple[str, tuple[str, ...]]:
     instrument = f"{candidate['symbol']}-USDT-SWAP"
     if current_position(positions, instrument):
         return "existing_manual_position", ()
-    with database.connect() as connection:
-        target = candidate_target(
-            connection,
-            candidate["symbol"],
-            candidate["family"],
-            candidate["parameters"],
-        )
-    if target == 0:
+    if candidate["current_target"] == 0:
         return "flat", ()
 
     details = client.instrument(instrument)
@@ -984,12 +1150,15 @@ def attempt_entry(
         account,
         positions,
         details,
+        candidate,
     )
     if not approved:
         logging.info(
             "live entry blocked instrument=%s reasons=%s", instrument, reasons
         )
         return "blocked", reasons
+    if not execute:
+        return "approved", ()
 
     ceiling = floor_step(
         Decimal(ticker["askPx"]) * (Decimal("1") + ENTRY_PRICE_BUFFER),
@@ -1070,7 +1239,196 @@ def attempt_entry(
     return "entered", ()
 
 
-def run_cycle(
+def managed_from_row(row) -> dict:
+    return {
+        "instrument": row[0],
+        "strategy": row[1],
+        "owned_quantity": row[2],
+        "average_price": row[3],
+        "exit_client_order_id": row[4],
+        "strategy_parameters": row[5],
+        "entry_order_id": row[6],
+        "entry_client_order_id": row[7],
+        "entry_score": row[8],
+        "strategy_cluster": row[9],
+        "asset_group": row[10],
+        "opened_at": row[11],
+        "replacement_eligible": row[12],
+    }
+
+
+def load_managed_positions(connection) -> list[dict]:
+    rows = connection.execute(
+        """
+        SELECT instrument, strategy, owned_quantity, average_price,
+               exit_client_order_id, strategy_parameters,
+               entry_order_id, entry_client_order_id, entry_score,
+               strategy_cluster, asset_group, opened_at
+               , replacement_eligible
+        FROM live_position ORDER BY opened_at
+        """
+    ).fetchall()
+    managed = [managed_from_row(row) for row in rows]
+    for item in managed:
+        item["asset_group"] = (
+            BY_INSTRUMENT[item["instrument"]].group
+            if item["instrument"] in BY_INSTRUMENT
+            else item["asset_group"]
+        )
+        if item["strategy_cluster"] == "legacy":
+            item["strategy_cluster"] = {
+                "trend": "slow-trend",
+                "breakout": "breakout",
+                "mean-reversion": "mean-reversion",
+            }.get(item["strategy"], "legacy")
+    return managed
+
+
+def manage_position(
+    settings: Settings,
+    client: OkxClient,
+    database: Database,
+    executor: Executor,
+    managed: dict,
+    account: dict,
+    positions: list[dict],
+) -> str:
+    ensure_managed_experiment(database, managed)
+    instrument = managed["instrument"]
+    details = client.instrument(instrument)
+    candidates = []
+    with database.connect() as connection:
+        candidates = load_candidates(connection, managed)
+    candidate = candidates[0] if candidates else None
+    if managed["exit_client_order_id"]:
+        close_owned_position(
+            settings,
+            client,
+            database,
+            executor,
+            managed,
+            account,
+            positions,
+            details,
+            candidate["parameters"] if candidate else {},
+            "resume durable exit",
+        )
+        return "exit_resumed"
+
+    protection_live = protection_is_live(client, database, instrument)
+    with database.connect() as connection:
+        rows = load_managed_positions(connection)
+        refreshed = next(
+            (row for row in rows if row["instrument"] == instrument), None
+        )
+    if not refreshed:
+        return "stop_closed"
+    managed = refreshed
+    positions = client.positions()
+    aggregate = current_position(positions, instrument)
+    if not aggregate:
+        if protection_live:
+            cancel_protection(client, database, instrument)
+        with database.connect() as connection:
+            connection.execute(
+                "DELETE FROM live_position WHERE instrument = %s",
+                (instrument,),
+            )
+            connection.commit()
+        mark_experiment_unreconciled(
+            database, instrument, "aggregate position disappeared"
+        )
+        return "position_missing"
+    if not protection_live:
+        close_owned_position(
+            settings,
+            client,
+            database,
+            executor,
+            managed,
+            account,
+            positions,
+            details,
+            candidate["parameters"] if candidate else {},
+            "attached stop unavailable",
+        )
+        return "unprotected_exit"
+
+    owned = Decimal(managed["owned_quantity"])
+    aggregate_size = Decimal(aggregate["pos"])
+    observe_experiment(
+        database,
+        instrument,
+        Decimal(aggregate.get("markPx") or aggregate.get("last")),
+        owned,
+        Decimal(managed["average_price"]),
+    )
+    if aggregate_size > owned:
+        disable_new_entries(
+            database, f"manual quantity on managed instrument {instrument}"
+        )
+        return "manual_quantity_block"
+    if aggregate_size < owned:
+        mark_experiment_unreconciled(
+            database,
+            instrument,
+            "external reduction made fill attribution incomplete",
+        )
+        managed["owned_quantity"] = aggregate_size
+        with database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE live_position SET owned_quantity = %s, updated_at = NOW()
+                WHERE instrument = %s
+                """,
+                (aggregate_size, instrument),
+            )
+            connection.commit()
+        close_owned_position(
+            settings,
+            client,
+            database,
+            executor,
+            managed,
+            account,
+            positions,
+            details,
+            candidate["parameters"] if candidate else {},
+            "external position reduction detected",
+        )
+        return "external_reduction_exit"
+    if not candidate:
+        close_owned_position(
+            settings,
+            client,
+            database,
+            executor,
+            managed,
+            account,
+            positions,
+            details,
+            {},
+            "candidate removed",
+        )
+        return "candidate_removed_exit"
+    if candidate["current_target"] == 0:
+        close_owned_position(
+            settings,
+            client,
+            database,
+            executor,
+            managed,
+            account,
+            positions,
+            details,
+            candidate["parameters"],
+            "strategy target flat",
+        )
+        return "signal_exit"
+    return "held"
+
+
+def _run_cycle(
     settings: Settings, client: OkxClient, database: Database, executor: Executor
 ) -> None:
     unresolved = recover_incomplete_entries(client, database)
@@ -1078,52 +1436,29 @@ def run_cycle(
     positions = client.positions()
     with database.connect() as connection:
         enabled = database.execution_enabled(connection)
-        row = connection.execute(
-            """
-            SELECT instrument, strategy, owned_quantity, average_price,
-                   exit_client_order_id, strategy_parameters,
-                   entry_order_id, entry_client_order_id
-            FROM live_position LIMIT 1
-            """
-        ).fetchone()
-        managed = (
-            {
-                "instrument": row[0],
-                "strategy": row[1],
-                "owned_quantity": row[2],
-                "average_price": row[3],
-                "exit_client_order_id": row[4],
-                "strategy_parameters": row[5],
-                "entry_order_id": row[6],
-                "entry_client_order_id": row[7],
-            }
-            if row
-            else None
-        )
-        candidates = load_candidates(connection, managed)
-        candidate = candidates[0] if managed and candidates else None
+        managed_positions = load_managed_positions(connection)
+        candidates = load_candidates(connection, None)
         database.heartbeat(
             connection,
             "ok" if enabled else "locked",
             {
                 "mode": settings.mode,
                 "executionEnabled": enabled,
-                "managedInstrument": managed["instrument"] if managed else None,
+                "managedInstrument": (
+                    managed_positions[0]["instrument"] if managed_positions else None
+                ),
+                "managedCount": len(managed_positions),
                 "unresolvedEntry": unresolved,
                 "candidatePoolSize": len(candidates),
             },
             worker="live-controller",
         )
         connection.commit()
-    if unresolved or (not enabled and not managed):
-        return
 
-    if managed:
-        ensure_managed_experiment(database, managed)
-        instrument = managed["instrument"]
-        details = client.instrument(instrument)
-        if managed["exit_client_order_id"]:
-            close_owned_position(
+    management_results = []
+    for managed in managed_positions:
+        try:
+            result = manage_position(
                 settings,
                 client,
                 database,
@@ -1131,176 +1466,233 @@ def run_cycle(
                 managed,
                 account,
                 positions,
-                details,
-                candidate["parameters"] if candidate else {},
-                "resume durable exit",
             )
-            return
-        protection_live = protection_is_live(client, database, instrument)
-        with database.connect() as connection:
-            refreshed = connection.execute(
-                """
-                SELECT instrument, strategy, owned_quantity, average_price,
-                       strategy_parameters, entry_order_id,
-                       entry_client_order_id
-                FROM live_position WHERE instrument = %s
-                """,
-                (instrument,),
-            ).fetchone()
-        if not refreshed:
-            return
-        managed = {
-            "instrument": refreshed[0],
-            "strategy": refreshed[1],
-            "owned_quantity": refreshed[2],
-            "average_price": refreshed[3],
-            "strategy_parameters": refreshed[4],
-            "entry_order_id": refreshed[5],
-            "entry_client_order_id": refreshed[6],
-        }
-        positions = client.positions()
-        aggregate = current_position(positions, instrument)
-        if not aggregate:
-            if protection_live:
-                cancel_protection(client, database, instrument)
-            with database.connect() as connection:
-                connection.execute(
-                    "DELETE FROM live_position WHERE instrument = %s",
-                    (instrument,),
-                )
-                connection.commit()
-            mark_experiment_unreconciled(
-                database, instrument, "aggregate position disappeared"
+        except Exception as error:
+            logging.exception(
+                "managed position cycle failed instrument=%s",
+                managed["instrument"],
             )
-            return
-        if not protection_live:
-            logging.error("attached stop unavailable; closing managed position")
-            close_owned_position(
-                settings,
-                client,
-                database,
-                executor,
-                managed,
-                account,
-                positions,
-                details,
-                candidate["parameters"] if candidate else {},
-                "attached stop unavailable",
-            )
-            return
-        owned = Decimal(managed["owned_quantity"])
-        aggregate_size = Decimal(aggregate["pos"])
-        observe_experiment(
-            database,
-            instrument,
-            Decimal(aggregate.get("markPx") or aggregate.get("last")),
-            owned,
-            Decimal(managed["average_price"]),
+            result = f"error:{type(error).__name__}"
+        management_results.append(
+            {"instrument": managed["instrument"], "status": result}
         )
-        if aggregate_size > owned:
-            logging.critical(
-                "manual quantity detected on managed instrument=%s "
-                "owned=%s aggregate=%s; disabling new entries",
-                instrument,
-                owned,
-                aggregate_size,
-            )
-            disable_new_entries(
-                database, "manual quantity on managed instrument"
-            )
-            return
-        if aggregate_size < owned:
-            mark_experiment_unreconciled(
-                database,
-                instrument,
-                "external reduction made fill attribution incomplete",
-            )
-            managed["owned_quantity"] = aggregate_size
-            with database.connect() as connection:
-                connection.execute(
-                    """
-                    UPDATE live_position SET owned_quantity = %s, updated_at = NOW()
-                    WHERE instrument = %s
-                    """,
-                    (aggregate_size, instrument),
-                )
-                connection.commit()
-            close_owned_position(
-                settings,
-                client,
-                database,
-                executor,
-                managed,
-                account,
-                positions,
-                details,
-                candidate["parameters"] if candidate else {},
-                "external position reduction detected",
-            )
-            return
-        if not candidate:
-            close_owned_position(
-                settings,
-                client,
-                database,
-                executor,
-                managed,
-                account,
-                positions,
-                details,
-                {},
-                "candidate removed",
-            )
-            return
-        with database.connect() as connection:
-            target = candidate_target(
-                connection,
-                candidate["symbol"],
-                candidate["family"],
-                candidate["parameters"],
-            )
-        if target == 0:
-            close_owned_position(
-                settings,
-                client,
-                database,
-                executor,
-                managed,
-                account,
-                positions,
-                details,
-                candidate["parameters"],
-                "strategy target flat",
-            )
-        return
 
-    scan_results = []
-    selected = None
-    long_targets = 0
-    for candidate in candidates:
-        status, reasons = attempt_entry(
-            settings,
-            client,
-            database,
-            executor,
-            candidate,
-            account,
-            positions,
-        )
-        if status != "flat":
-            long_targets += 1
-        scan_results.append(
-            {
-                "symbol": candidate["symbol"],
-                "family": candidate["family"],
-                "status": status,
-                "reasons": list(reasons),
-            }
-        )
-        if status in {"entered", "unfilled", "emergency_exit"}:
-            selected = f"{candidate['symbol']}:{candidate['family']}"
-            break
     with database.connect() as connection:
+        managed_positions = load_managed_positions(connection)
+        enabled = database.execution_enabled(connection)
+        reservation = load_replacement_reservation(connection)
+        connection.commit()
+    if unresolved or not enabled:
+        return
+
+    positions = client.positions()
+    account = client.account_balance()
+    held_symbols = {
+        item["instrument"].split("-", 1)[0] for item in managed_positions
+    }
+    cluster_counts = Counter(
+        item["strategy_cluster"] for item in managed_positions
+    )
+    group_counts = Counter(item["asset_group"] for item in managed_positions)
+    slots = max(0, 5 - len(managed_positions))
+    scan_results: list[dict] = []
+    selected: list[str] = []
+
+    # A full portfolio replaces at most one incumbent per cycle and only
+    # after a one-day hold plus a meaningful score improvement.
+    if slots == 0 and managed_positions:
+        replaceable = [
+            item for item in managed_positions if item["replacement_eligible"]
+        ]
+        weakest = (
+            min(replaceable, key=lambda item: Decimal(item["entry_score"]))
+            if replaceable
+            else None
+        )
+        if weakest and dt.datetime.now(dt.timezone.utc) - weakest["opened_at"] >= dt.timedelta(days=1):
+            projected_clusters = cluster_counts.copy()
+            projected_groups = group_counts.copy()
+            projected_clusters[weakest["strategy_cluster"]] -= 1
+            projected_groups[weakest["asset_group"]] -= 1
+            for candidate in candidates:
+                symbol = candidate["symbol"]
+                if not portfolio_candidate_allowed(
+                    candidate,
+                    held_symbols - {
+                        weakest["instrument"].split("-", 1)[0]
+                    },
+                    projected_clusters,
+                    projected_groups,
+                ):
+                    continue
+                if not replacement_allowed(
+                    Decimal(candidate["score"]),
+                    Decimal(weakest["entry_score"]),
+                    weakest["opened_at"],
+                    dt.datetime.now(dt.timezone.utc),
+                ):
+                    break
+                status, reasons = attempt_entry(
+                    settings,
+                    client,
+                    database,
+                    executor,
+                    candidate,
+                    account,
+                    positions,
+                    execute=False,
+                )
+                scan_results.append(
+                    {
+                        "symbol": symbol,
+                        "family": candidate["family"],
+                        "status": f"replacement_{status}",
+                        "reasons": list(reasons),
+                    }
+                )
+                if status == "approved":
+                    with database.connect() as connection:
+                        connection.execute(
+                            """
+                            INSERT INTO replacement_reservation
+                              (id, symbol, family, cluster, parameters, score,
+                               incumbent_instrument, expires_at)
+                            VALUES (1, %s, %s, %s, %s::jsonb, %s, %s,
+                                    NOW() + INTERVAL '15 minutes')
+                            ON CONFLICT (id) DO UPDATE SET
+                              symbol = EXCLUDED.symbol,
+                              family = EXCLUDED.family,
+                              cluster = EXCLUDED.cluster,
+                              parameters = EXCLUDED.parameters,
+                              score = EXCLUDED.score,
+                              incumbent_instrument = EXCLUDED.incumbent_instrument,
+                              created_at = NOW(), expires_at = EXCLUDED.expires_at
+                            """,
+                            (
+                                symbol,
+                                candidate["family"],
+                                candidate["cluster"],
+                                json.dumps(candidate["parameters"]),
+                                candidate["score"],
+                                weakest["instrument"],
+                            ),
+                        )
+                        connection.commit()
+                    close_owned_position(
+                        settings,
+                        client,
+                        database,
+                        executor,
+                        weakest,
+                        account,
+                        positions,
+                        client.instrument(weakest["instrument"]),
+                        weakest["strategy_parameters"],
+                        f"replaced by {symbol}:{candidate['family']}",
+                    )
+                    positions = client.positions()
+                    account = client.account_balance()
+                    with database.connect() as connection:
+                        refreshed_reservation = load_replacement_reservation(
+                            connection
+                        )
+                        refreshed_managed = load_managed_positions(connection)
+                        connection.commit()
+                    if not refreshed_reservation:
+                        break
+                    refreshed_held = {
+                        item["instrument"].split("-", 1)[0]
+                        for item in refreshed_managed
+                    }
+                    refreshed_clusters = Counter(
+                        item["strategy_cluster"] for item in refreshed_managed
+                    )
+                    refreshed_groups = Counter(
+                        item["asset_group"] for item in refreshed_managed
+                    )
+                    if (
+                        refreshed_reservation["current_target"] != 1
+                        or not portfolio_candidate_allowed(
+                            refreshed_reservation,
+                            refreshed_held,
+                            refreshed_clusters,
+                            refreshed_groups,
+                        )
+                    ):
+                        clear_replacement_reservation(database)
+                        break
+                    entry_status, entry_reasons = attempt_entry(
+                        settings,
+                        client,
+                        database,
+                        executor,
+                        refreshed_reservation,
+                        account,
+                        positions,
+                    )
+                    scan_results.append(
+                        {
+                            "symbol": symbol,
+                            "family": candidate["family"],
+                            "status": f"replacement_entry_{entry_status}",
+                            "reasons": list(entry_reasons),
+                        }
+                    )
+                    if entry_status == "entered":
+                        clear_replacement_reservation(database)
+                    selected.append(
+                        f"replace:{weakest['instrument']}->{symbol}:{entry_status}"
+                    )
+                    break
+    else:
+        entry_candidates = [reservation] if reservation else candidates
+        for candidate in entry_candidates:
+            if slots <= 0:
+                break
+            symbol = candidate["symbol"]
+            if not portfolio_candidate_allowed(
+                candidate, held_symbols, cluster_counts, group_counts
+            ):
+                continue
+            instrument = f"{symbol}-USDT-SWAP"
+            group = BY_INSTRUMENT[instrument].group
+            status, reasons = attempt_entry(
+                settings,
+                client,
+                database,
+                executor,
+                candidate,
+                account,
+                positions,
+            )
+            scan_results.append(
+                {
+                    "symbol": symbol,
+                    "family": candidate["family"],
+                    "status": status,
+                    "reasons": list(reasons),
+                }
+            )
+            if status == "entered":
+                if reservation:
+                    clear_replacement_reservation(database)
+                selected.append(f"{symbol}:{candidate['family']}")
+                held_symbols.add(symbol)
+                cluster_counts[candidate["cluster"]] += 1
+                group_counts[group] += 1
+                slots -= 1
+                positions = client.positions()
+                account = client.account_balance()
+            elif reservation and status in {
+                "flat",
+                "existing_manual_position",
+                "emergency_exit",
+            }:
+                clear_replacement_reservation(database)
+                break
+
+    with database.connect() as connection:
+        final_managed = load_managed_positions(connection)
         database.heartbeat(
             connection,
             "ok",
@@ -1308,19 +1700,35 @@ def run_cycle(
                 "mode": settings.mode,
                 "executionEnabled": True,
                 "managedInstrument": (
-                    f"{selected.split(':')[0]}-USDT-SWAP"
-                    if selected
-                    and scan_results[-1]["status"] == "entered"
+                    final_managed[0]["instrument"]
+                    if final_managed
                     else None
                 ),
+                "managedCount": len(final_managed),
                 "candidatePoolSize": len(candidates),
-                "longTargetsScanned": long_targets,
-                "selectedCandidate": selected,
-                "scan": scan_results,
+                "selectedCandidates": selected,
+                "management": management_results,
+                "scan": scan_results[:50],
             },
             worker="live-controller",
         )
         connection.commit()
+
+
+def run_cycle(
+    settings: Settings, client: OkxClient, database: Database, executor: Executor
+) -> None:
+    with database.connect() as lock_connection:
+        acquired = lock_connection.execute(
+            "SELECT pg_try_advisory_lock(884423)"
+        ).fetchone()[0]
+        if not acquired:
+            logging.warning("another live controller owns the portfolio lock")
+            return
+        try:
+            _run_cycle(settings, client, database, executor)
+        finally:
+            lock_connection.execute("SELECT pg_advisory_unlock(884423)")
 
 
 def main() -> None:

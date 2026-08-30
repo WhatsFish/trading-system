@@ -177,6 +177,7 @@ CREATE TABLE IF NOT EXISTS strategy_experiment (
   run_id           UUID        NOT NULL,
   symbol           TEXT        NOT NULL,
   family           TEXT        NOT NULL,
+  cluster          TEXT        NOT NULL DEFAULT 'legacy',
   parameters       JSONB       NOT NULL,
   fold_returns     JSONB       NOT NULL,
   return_pct       NUMERIC     NOT NULL,
@@ -186,6 +187,10 @@ CREATE TABLE IF NOT EXISTS strategy_experiment (
   current_target   INTEGER     NOT NULL DEFAULT 0
                                CHECK (current_target IN (0, 1)),
   score            NUMERIC     NOT NULL,
+  validation_score NUMERIC,
+  holdout_return_pct NUMERIC,
+  holdout_drawdown_pct NUMERIC,
+  holdout_trades   INTEGER,
   live_experience_count INTEGER NOT NULL DEFAULT 0,
   live_adjustment  NUMERIC     NOT NULL DEFAULT 0,
   eligible         BOOLEAN     NOT NULL,
@@ -198,6 +203,12 @@ ALTER TABLE strategy_experiment
   ADD COLUMN IF NOT EXISTS live_adjustment NUMERIC NOT NULL DEFAULT 0;
 ALTER TABLE strategy_experiment
   ADD COLUMN IF NOT EXISTS current_target INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE strategy_experiment
+  ADD COLUMN IF NOT EXISTS cluster TEXT NOT NULL DEFAULT 'legacy';
+ALTER TABLE strategy_experiment ADD COLUMN IF NOT EXISTS validation_score NUMERIC;
+ALTER TABLE strategy_experiment ADD COLUMN IF NOT EXISTS holdout_return_pct NUMERIC;
+ALTER TABLE strategy_experiment ADD COLUMN IF NOT EXISTS holdout_drawdown_pct NUMERIC;
+ALTER TABLE strategy_experiment ADD COLUMN IF NOT EXISTS holdout_trades INTEGER;
 CREATE INDEX IF NOT EXISTS strategy_experiment_rank
   ON strategy_experiment (run_id, eligible, score DESC);
 
@@ -209,6 +220,18 @@ CREATE TABLE IF NOT EXISTS strategy_candidate (
   promoted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (symbol, family)
 );
+
+CREATE TABLE IF NOT EXISTS strategy_live_target (
+  symbol         TEXT        NOT NULL,
+  family         TEXT        NOT NULL,
+  parameter_key  TEXT        NOT NULL,
+  parameters     JSONB       NOT NULL,
+  current_target INTEGER     NOT NULL CHECK (current_target IN (0, 1)),
+  computed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (symbol, family, parameter_key)
+);
+CREATE INDEX IF NOT EXISTS strategy_live_target_current
+  ON strategy_live_target (current_target, computed_at DESC);
 
 CREATE TABLE IF NOT EXISTS execution_audit (
   id              BIGSERIAL   PRIMARY KEY,
@@ -244,6 +267,10 @@ CREATE TABLE IF NOT EXISTS live_position (
   entry_client_order_id TEXT    NOT NULL,
   owned_quantity   NUMERIC     NOT NULL CHECK (owned_quantity > 0),
   average_price    NUMERIC     NOT NULL,
+  entry_score      NUMERIC     NOT NULL DEFAULT 0,
+  strategy_cluster TEXT        NOT NULL DEFAULT 'legacy',
+  asset_group      TEXT        NOT NULL DEFAULT 'unknown',
+  replacement_eligible BOOLEAN NOT NULL DEFAULT FALSE,
   exit_client_order_id TEXT,
   exit_state       TEXT,
   opened_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -253,6 +280,10 @@ ALTER TABLE live_position ADD COLUMN IF NOT EXISTS entry_client_order_id TEXT;
 ALTER TABLE live_position ADD COLUMN IF NOT EXISTS owned_quantity NUMERIC;
 ALTER TABLE live_position ADD COLUMN IF NOT EXISTS average_price NUMERIC;
 ALTER TABLE live_position ADD COLUMN IF NOT EXISTS strategy_parameters JSONB;
+ALTER TABLE live_position ADD COLUMN IF NOT EXISTS entry_score NUMERIC NOT NULL DEFAULT 0;
+ALTER TABLE live_position ADD COLUMN IF NOT EXISTS strategy_cluster TEXT NOT NULL DEFAULT 'legacy';
+ALTER TABLE live_position ADD COLUMN IF NOT EXISTS asset_group TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE live_position ADD COLUMN IF NOT EXISTS replacement_eligible BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE live_position ADD COLUMN IF NOT EXISTS exit_client_order_id TEXT;
 ALTER TABLE live_position ADD COLUMN IF NOT EXISTS exit_state TEXT;
 ALTER TABLE live_position ALTER COLUMN entry_client_order_id SET NOT NULL;
@@ -315,6 +346,18 @@ CREATE TABLE IF NOT EXISTS live_experiment_exit_fill (
   fee           NUMERIC     NOT NULL,
   reason        TEXT        NOT NULL,
   PRIMARY KEY (experiment_id, order_id)
+);
+
+CREATE TABLE IF NOT EXISTS replacement_reservation (
+  id          SMALLINT    PRIMARY KEY CHECK (id = 1),
+  symbol      TEXT        NOT NULL,
+  family      TEXT        NOT NULL,
+  cluster     TEXT        NOT NULL,
+  parameters  JSONB       NOT NULL,
+  score       NUMERIC     NOT NULL,
+  incumbent_instrument TEXT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at  TIMESTAMPTZ NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS shadow_account (

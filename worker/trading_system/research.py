@@ -5,6 +5,7 @@ import os
 import time
 import urllib.request
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -16,7 +17,9 @@ from .universe import ASSETS
 
 SYMBOLS = tuple(asset.instrument.split("-", 1)[0] for asset in ASSETS)
 COMPANY_SYMBOLS = tuple(
-    symbol for symbol in SYMBOLS if symbol not in {"SPY", "QQQ"}
+    item.instrument.split("-", 1)[0]
+    for item in ASSETS
+    if item.group != "index"
 )
 MATERIAL_FORMS = {"8-K", "10-K", "10-Q"}
 
@@ -33,12 +36,22 @@ def save_history(connection: psycopg.Connection, period: str) -> int:
         progress=False,
     )
     inserted = 0
+    eastern = dt.datetime.now(dt.timezone.utc).astimezone(
+        ZoneInfo("America/New_York")
+    )
+    cutoff = (
+        eastern.date() - dt.timedelta(days=1)
+        if eastern.weekday() < 5 and eastern.time() < dt.time(16, 15)
+        else eastern.date()
+    )
     with connection.cursor() as cursor:
         for symbol in SYMBOLS:
             if symbol not in frame.columns.get_level_values(0):
                 continue
             rows = frame[symbol].dropna(subset=["Open", "High", "Low", "Close"])
             for timestamp, row in rows.iterrows():
+                if timestamp.date() > cutoff:
+                    continue
                 cursor.execute(
                     """
                     INSERT INTO underlying_daily

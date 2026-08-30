@@ -45,10 +45,11 @@ export default async function TradingDashboard() {
         </div>
       </header>
 
-      <section className="mb-8 grid gap-4 sm:grid-cols-3">
+      <section className="mb-8 grid gap-4 sm:grid-cols-4">
         <Metric label="Total equity" value={`${money(account?.total_equity_usd)} USD`} />
         <Metric label="Available USDT" value={money(account?.available_usdt)} />
         <Metric label="Open positions" value={String(positions.length)} />
+        <Metric label="System portfolio" value={`${liveState?.managed_count ?? 0} / 5`} />
       </section>
 
       <Section title="Open positions">
@@ -146,7 +147,7 @@ export default async function TradingDashboard() {
 
       <Section
         title="Continuous strategy lab candidates"
-        description="For each stock and strategy family, this table keeps only the best eligible parameter set. Score = test return − 2 × max drawdown, plus a small live adjustment only after five completed real trades. Folds shows how many of three independent test windows were profitable. Live is the number of completed real experiments."
+        description="The daily lab runs 12,300 configurations across 50 instruments and 27 distinct strategy families. Parameters are selected using the first two validation windows; Return and Drawdown below come from the untouched final holdout window. Score conservatively uses the weaker risk-adjusted result. Folds shows how many of all three windows were profitable. Live is the number of completed real experiments."
       >
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
@@ -283,13 +284,23 @@ function Section({
 }
 
 function formatParameters(family: string, parameters: Record<string, number>) {
-  if (family === "trend") {
-    return `${parameters.fast}d / ${parameters.slow}d averages`;
-  }
-  if (family === "breakout") {
-    return `buy ${parameters.entryDays}d high / exit ${parameters.exitDays}d low`;
-  }
-  return `${parameters.lookback}d average / ${parameters.thresholdBps / 100}% dip`;
+  const labels: Record<string, string> = {
+    fast: "fast",
+    slow: "slow",
+    period: "period",
+    lookback: "lookback",
+    entryDays: "entry",
+    exitDays: "exit",
+    holdDays: "hold",
+    gapPct: "gap%",
+    entryRsi: "entry RSI",
+    exitRsi: "exit RSI",
+    stdDev: "std",
+    dipPct: "dip%",
+  };
+  return Object.entries(parameters)
+    .map(([key, value]) => `${labels[key] ?? key}=${value}`)
+    .join(" · ");
 }
 
 function Empty({ text }: { text: string }) {

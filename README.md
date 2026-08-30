@@ -1,7 +1,7 @@
 # Trading System
 
-A 24/7, audit-first OKX US-equity-perpetual research system. It focuses on
-technology and healthcare leaders plus S&P 500/Nasdaq-100 ETFs, collects
+A 24/7, audit-first OKX US-equity-perpetual research system. It covers 50
+technology, semiconductor and healthcare names plus broad/sector ETFs, collects
 market and account data, evaluates session-aware deterministic strategies,
 enforces hard risk limits, and exposes a private dashboard.
 
@@ -61,9 +61,10 @@ The earlier shadow portfolio is retained as an offline diagnostic tool but is
 not scheduled or shown on the primary dashboard. Live experiments are the
 operational source of trading experience.
 
-The weekday research job also evaluates a bounded 420-combination strategy
-grid and updates the candidate leaderboard. Every rejected experiment remains
-auditable.
+The weekday research job evaluates 12,300 configurations across 27 distinct
+strategy families and updates the nested-holdout candidate leaderboard. Every
+rejected experiment remains auditable. See
+[`docs/strategy-library.md`](docs/strategy-library.md).
 
 The execution transport test requires a one-off acknowledgement and places a
 minimum-size post-only order far from market before immediately canceling it:
@@ -82,10 +83,11 @@ can be changed without rebuilding or stopping account observation:
 ./scripts/live-on.sh
 ```
 
-The active policy allows at most one system-managed long, sized up to 35% of
-current equity, with 1x isolated leverage, an atomic attached 5% stop, and no
-short opening. The executor enforces the exact notional authorized by the
-corresponding risk decision rather than a fixed dollar cap.
+The active policy allows up to five system-managed longs, each sized up to 18%
+of current equity, with 1x isolated leverage, an atomic attached 5% stop, and
+no short opening. At most two positions may share an asset group or strategy
+cluster. The executor enforces the exact notional authorized by each risk
+decision rather than a fixed dollar cap.
 
 Live experiments retain their hypothesis, entry context, fees, mark-to-market
 path, MFE/MAE, outcome, and deterministic postmortem. After five closed samples

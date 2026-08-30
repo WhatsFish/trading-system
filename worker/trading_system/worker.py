@@ -27,13 +27,15 @@ def request_stop(_signum, _frame) -> None:
 def run_cycle(settings: Settings, client: OkxClient, database: Database) -> None:
     account = client.account_balance()
     positions = client.positions()
+    tickers = client.tickers()
+    instruments = client.instruments()
     with database.connect() as connection:
         equity, exposure = database.save_account(connection, account, positions)
         execution_enabled = database.execution_enabled(connection)
         for instrument in settings.instruments:
             candles = client.candles(instrument)
-            ticker = client.ticker(instrument)
-            details = client.instrument(instrument)
+            ticker = tickers[instrument]
+            details = instruments[instrument]
             database.save_candles(connection, instrument, candles)
             database.save_market(connection, instrument, ticker, details)
             if instrument not in BY_INSTRUMENT:
@@ -62,6 +64,7 @@ def run_cycle(settings: Settings, client: OkxClient, database: Database) -> None
                 settings.mode,
                 "us-equity-session-trend-v1",
             )
+            time.sleep(0.06)
         database.heartbeat(
             connection,
             "ok",
