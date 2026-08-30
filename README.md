@@ -91,3 +91,7 @@ Live experiments retain their hypothesis, entry context, fees, mark-to-market
 path, MFE/MAE, outcome, and deterministic postmortem. After five closed samples
 in a symbol/strategy family, live outcomes receive a bounded weight in the
 next strategy-lab ranking.
+
+The live controller scans all eligible candidates once per minute, ordered by
+score. It recalculates current targets, skips flat candidates, and continues
+after candidate-specific risk blocks until one entry is approved.

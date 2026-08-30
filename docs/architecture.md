@@ -172,6 +172,13 @@ underlying reference, basis, corporate-event, account-exposure, daily-loss,
 and drawdown checks all pass. A 7x24 exchange venue does not override stale
 underlying-market checks.
 
+When no system position is open, the controller scans the entire eligible
+candidate pool every minute in descending risk-adjusted score order. It
+recalculates each candidate's current long/flat target, skips flat candidates,
+and continues past candidate-specific risk blocks until it finds the first
+approved long target. It stops after one accepted attempt because the account
+policy permits only one managed position.
+
 The experimental account sizing policy authorizes up to 35% of current equity
 for one 1x isolated position and caps total account nominal exposure at 150%
 of equity. New entries stop after a 10% daily equity loss or 20% peak-to-current

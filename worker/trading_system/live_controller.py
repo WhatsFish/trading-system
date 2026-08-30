@@ -917,29 +917,157 @@ def close_owned_position(
     raise RuntimeError("managed exit did not reconcile")
 
 
-def load_candidate(connection, managed: dict | None) -> dict | None:
+def load_candidates(connection, managed: dict | None) -> list[dict]:
     if managed:
         symbol = managed["instrument"].split("-", 1)[0]
         if not managed.get("strategy_parameters"):
-            return None
-        return {
-            "symbol": symbol,
-            "family": managed["strategy"],
-            "parameters": managed["strategy_parameters"],
+            return []
+        return [
+            {
+                "symbol": symbol,
+                "family": managed["strategy"],
+                "parameters": managed["strategy_parameters"],
+            }
+        ]
+    rows = connection.execute(
+        """
+        SELECT e.symbol, e.family, e.parameters, c.score
+        FROM strategy_candidate c
+        JOIN strategy_experiment e ON e.id = c.experiment_id
+        ORDER BY c.score DESC
+        """
+    ).fetchall()
+    return [
+        {
+            "symbol": row[0],
+            "family": row[1],
+            "parameters": row[2],
+            "score": str(row[3]),
         }
-    else:
+        for row in rows
+    ]
+
+
+def attempt_entry(
+    settings: Settings,
+    client: OkxClient,
+    database: Database,
+    executor: Executor,
+    candidate: dict,
+    account: dict,
+    positions: list[dict],
+) -> tuple[str, tuple[str, ...]]:
+    instrument = f"{candidate['symbol']}-USDT-SWAP"
+    if current_position(positions, instrument):
+        return "existing_manual_position", ()
+    with database.connect() as connection:
+        target = candidate_target(
+            connection,
+            candidate["symbol"],
+            candidate["family"],
+            candidate["parameters"],
+        )
+    if target == 0:
+        return "flat", ()
+
+    details = client.instrument(instrument)
+    ticker = client.ticker(instrument)
+    last = Decimal(ticker["last"])
+    decision_id, approved, reasons, authorized_notional = record_decision(
+        settings,
+        database,
+        instrument,
+        candidate["family"],
+        "buy",
+        last,
+        candidate["parameters"],
+        account,
+        positions,
+        details,
+    )
+    if not approved:
+        logging.info(
+            "live entry blocked instrument=%s reasons=%s", instrument, reasons
+        )
+        return "blocked", reasons
+
+    ceiling = floor_step(
+        Decimal(ticker["askPx"]) * (Decimal("1") + ENTRY_PRICE_BUFFER),
+        Decimal(details["tickSz"]),
+    )
+    size = floor_step(
+        authorized_notional / ceiling,
+        Decimal(details["lotSz"]),
+    )
+    if size < Decimal(details["minSz"]):
+        return "below_minimum_size", ()
+    client.set_leverage(instrument, "1")
+    client_id = alphanumeric_id("tsentry")
+    stop_client_id = alphanumeric_id("tsstop")
+    stop_trigger = floor_step(
+        last * (Decimal("1") - STOP_DISTANCE),
+        Decimal(details["tickSz"]),
+    )
+    executor.submit(
+        OrderIntent(
+            instrument,
+            "buy",
+            size,
+            ceiling,
+            False,
+            client_id,
+            decision_id,
+            "ioc",
+            stop_trigger,
+            stop_client_id,
+        )
+    )
+    if recover_incomplete_entries(client, database):
+        raise RuntimeError("entry remains unresolved after IOC submission")
+    with database.connect() as connection:
         row = connection.execute(
             """
-            SELECT e.symbol, e.family, e.parameters
-            FROM strategy_candidate c
-            JOIN strategy_experiment e ON e.id = c.experiment_id
-            WHERE e.current_target = 1
-            ORDER BY c.score DESC LIMIT 1
-            """
+            SELECT owned_quantity, average_price FROM live_position
+            WHERE entry_client_order_id = %s
+            """,
+            (client_id,),
         ).fetchone()
     if not row:
-        return None
-    return {"symbol": row[0], "family": row[1], "parameters": row[2]}
+        return "unfilled", ()
+    if not protection_is_live(client, database, instrument):
+        logging.error("attached stop missing after fill; closing managed position")
+        with database.connect() as connection:
+            managed_row = connection.execute(
+                """
+                SELECT instrument, strategy, owned_quantity, average_price,
+                       strategy_parameters, entry_order_id,
+                       entry_client_order_id
+                FROM live_position WHERE instrument = %s
+                """,
+                (instrument,),
+            ).fetchone()
+        close_owned_position(
+            settings,
+            client,
+            database,
+            executor,
+            {
+                "instrument": managed_row[0],
+                "strategy": managed_row[1],
+                "owned_quantity": managed_row[2],
+                "average_price": managed_row[3],
+                "strategy_parameters": managed_row[4],
+                "entry_order_id": managed_row[5],
+                "entry_client_order_id": managed_row[6],
+            },
+            client.account_balance(),
+            client.positions(),
+            details,
+            candidate["parameters"],
+            "initial stop failed",
+        )
+        return "emergency_exit", ()
+    return "entered", ()
 
 
 def run_cycle(
@@ -972,7 +1100,8 @@ def run_cycle(
             if row
             else None
         )
-        candidate = load_candidate(connection, managed)
+        candidates = load_candidates(connection, managed)
+        candidate = candidates[0] if managed and candidates else None
         database.heartbeat(
             connection,
             "ok" if enabled else "locked",
@@ -981,6 +1110,7 @@ def run_cycle(
                 "executionEnabled": enabled,
                 "managedInstrument": managed["instrument"] if managed else None,
                 "unresolvedEntry": unresolved,
+                "candidatePoolSize": len(candidates),
             },
             worker="live-controller",
         )
@@ -1144,114 +1274,53 @@ def run_cycle(
             )
         return
 
-    if not candidate:
-        return
-    instrument = f"{candidate['symbol']}-USDT-SWAP"
-    if current_position(positions, instrument):
-        return
-    with database.connect() as connection:
-        target = candidate_target(
-            connection,
-            candidate["symbol"],
-            candidate["family"],
-            candidate["parameters"],
-        )
-    if target == 0:
-        return
-
-    details = client.instrument(instrument)
-    ticker = client.ticker(instrument)
-    last = Decimal(ticker["last"])
-    decision_id, approved, reasons, authorized_notional = record_decision(
-        settings,
-        database,
-        instrument,
-        candidate["family"],
-        "buy",
-        last,
-        candidate["parameters"],
-        account,
-        positions,
-        details,
-    )
-    if not approved:
-        logging.info("live entry blocked instrument=%s reasons=%s", instrument, reasons)
-        return
-
-    ceiling = floor_step(
-        Decimal(ticker["askPx"]) * (Decimal("1") + ENTRY_PRICE_BUFFER),
-        Decimal(details["tickSz"]),
-    )
-    budget = authorized_notional
-    size = floor_step(budget / ceiling, Decimal(details["lotSz"]))
-    if size < Decimal(details["minSz"]):
-        logging.info("live entry below minimum size instrument=%s", instrument)
-        return
-    client.set_leverage(instrument, "1")
-    client_id = alphanumeric_id("tsentry")
-    stop_client_id = alphanumeric_id("tsstop")
-    stop_trigger = floor_step(
-        last * (Decimal("1") - STOP_DISTANCE),
-        Decimal(details["tickSz"]),
-    )
-    executor.submit(
-        OrderIntent(
-            instrument,
-            "buy",
-            size,
-            ceiling,
-            False,
-            client_id,
-            decision_id,
-            "ioc",
-            stop_trigger,
-            stop_client_id,
-        )
-    )
-    if recover_incomplete_entries(client, database):
-        raise RuntimeError("entry remains unresolved after IOC submission")
-    with database.connect() as connection:
-        row = connection.execute(
-            """
-            SELECT owned_quantity, average_price FROM live_position
-            WHERE entry_client_order_id = %s
-            """,
-            (client_id,),
-        ).fetchone()
-    if not row:
-        return
-    if not protection_is_live(client, database, instrument):
-        logging.error("attached stop missing after fill; closing managed position")
-        with database.connect() as connection:
-            managed_row = connection.execute(
-                """
-                SELECT instrument, strategy, owned_quantity, average_price,
-                       strategy_parameters, entry_order_id,
-                       entry_client_order_id
-                FROM live_position WHERE instrument = %s
-                """,
-                (instrument,),
-            ).fetchone()
-        close_owned_position(
+    scan_results = []
+    selected = None
+    long_targets = 0
+    for candidate in candidates:
+        status, reasons = attempt_entry(
             settings,
             client,
             database,
             executor,
-            {
-                "instrument": managed_row[0],
-                "strategy": managed_row[1],
-                "owned_quantity": managed_row[2],
-                "average_price": managed_row[3],
-                "strategy_parameters": managed_row[4],
-                "entry_order_id": managed_row[5],
-                "entry_client_order_id": managed_row[6],
-            },
-            client.account_balance(),
-            client.positions(),
-            details,
-            candidate["parameters"],
-            "initial stop failed",
+            candidate,
+            account,
+            positions,
         )
+        if status != "flat":
+            long_targets += 1
+        scan_results.append(
+            {
+                "symbol": candidate["symbol"],
+                "family": candidate["family"],
+                "status": status,
+                "reasons": list(reasons),
+            }
+        )
+        if status in {"entered", "unfilled", "emergency_exit"}:
+            selected = f"{candidate['symbol']}:{candidate['family']}"
+            break
+    with database.connect() as connection:
+        database.heartbeat(
+            connection,
+            "ok",
+            {
+                "mode": settings.mode,
+                "executionEnabled": True,
+                "managedInstrument": (
+                    f"{selected.split(':')[0]}-USDT-SWAP"
+                    if selected
+                    and scan_results[-1]["status"] == "entered"
+                    else None
+                ),
+                "candidatePoolSize": len(candidates),
+                "longTargetsScanned": long_targets,
+                "selectedCandidate": selected,
+                "scan": scan_results,
+            },
+            worker="live-controller",
+        )
+        connection.commit()
 
 
 def main() -> None:
