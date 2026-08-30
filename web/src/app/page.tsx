@@ -17,9 +17,6 @@ export default async function TradingDashboard() {
     basis,
     events,
     backtests,
-    shadowAccount,
-    shadowPositions,
-    shadowTrades,
     candidates,
     executionAudits,
     liveState,
@@ -54,41 +51,6 @@ export default async function TradingDashboard() {
         <Metric label="Open positions" value={String(positions.length)} />
       </section>
 
-      <Section title="Shadow portfolio · no real orders">
-        <div className="mb-4 grid gap-3 sm:grid-cols-4">
-          <Metric label="Virtual equity" value={`${money(shadowAccount?.equity)} USDT`} />
-          <Metric label="Virtual cash" value={money(shadowAccount?.cash)} />
-          <Metric label="Realized PnL" value={money(shadowAccount?.realized_pnl)} />
-          <Metric label="Drawdown" value={`${money(shadowAccount?.drawdown_pct)}%`} />
-        </div>
-        {shadowPositions.length ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead className="text-xs text-neutral-500">
-                <tr><th>Instrument</th><th>Strategy</th><th>Quantity</th><th>Entry</th><th>Mark</th><th>PnL</th></tr>
-              </thead>
-              <tbody>
-                {shadowPositions.map((position) => (
-                  <tr key={position.instrument} className="border-t border-neutral-200 dark:border-neutral-800">
-                    <td className="py-2 font-medium">{position.instrument.replace("-USDT-SWAP", "")}</td>
-                    <td>{position.strategy.replace("daily-", "")}</td>
-                    <td>{position.quantity}</td>
-                    <td>{money(position.average_price)}</td>
-                    <td>{money(position.mark_price)}</td>
-                    <td>{money(position.unrealized_pnl)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : <Empty text="No virtual position yet; entries are evaluated near each US market close." />}
-        {shadowTrades.length > 0 && (
-          <p className="mt-3 text-xs text-neutral-500">
-            {shadowTrades.length} recent simulated fills · 5 bps fee + 10 bps adverse slippage per side
-          </p>
-        )}
-      </Section>
-
       <Section title="Open positions">
         {positions.length ? (
           <div className="overflow-x-auto">
@@ -110,13 +72,18 @@ export default async function TradingDashboard() {
         ) : <Empty text="No open positions." />}
       </Section>
 
-      <Section title="Latest strategy decisions">
+      <Section
+        title="Market-session observations · not live order instructions"
+        description="These cards apply one common short-term session rule to all 14 symbols. They help monitor market state, but the live controller trades only the top candidate shown further below."
+      >
         <div className="grid gap-3 md:grid-cols-3">
           {decisions.map((d) => (
             <article key={d.instrument} className="rounded-md border border-neutral-200 p-4 dark:border-neutral-800">
               <div className="flex items-center justify-between">
                 <h3 className="font-medium">{d.instrument.replace("-USDT-SWAP", "")}</h3>
-                <span className="rounded bg-neutral-100 px-2 py-0.5 text-xs uppercase dark:bg-neutral-800">{d.action}</span>
+                <span className="rounded bg-neutral-100 px-2 py-0.5 text-xs uppercase dark:bg-neutral-800">
+                  {d.action === "buy" ? "ENTRY SIGNAL" : d.action === "sell" ? "FLAT / EXIT" : "NO CHANGE"}
+                </span>
               </div>
               <p className="mt-2 text-sm text-neutral-600 dark:text-neutral-400">{d.rationale}</p>
               <p className="mt-3 text-xs text-neutral-500">
@@ -152,7 +119,10 @@ export default async function TradingDashboard() {
         </div>
       </Section>
 
-      <Section title="Out-of-sample daily backtests">
+      <Section
+        title="Baseline out-of-sample backtests"
+        description="Same four baseline rules are applied to every stock for an apples-to-apples comparison. Return is compounded test-period performance; max drawdown is the largest peak-to-trough loss; trades counts individual buy or sell transitions, not round trips."
+      >
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="text-xs text-neutral-500">
@@ -174,17 +144,21 @@ export default async function TradingDashboard() {
         </div>
       </Section>
 
-      <Section title="Continuous strategy lab candidates">
+      <Section
+        title="Continuous strategy lab candidates"
+        description="For each stock and strategy family, this table keeps only the best eligible parameter set. Score = test return − 2 × max drawdown, plus a small live adjustment only after five completed real trades. Folds shows how many of three independent test windows were profitable. Live is the number of completed real experiments."
+      >
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="text-xs text-neutral-500">
-              <tr><th>Symbol</th><th>Family</th><th>Score</th><th>Return</th><th>Drawdown</th><th>Folds</th><th>Live</th></tr>
+              <tr><th>Symbol</th><th>Family</th><th>Parameters</th><th>Score</th><th>Return</th><th>Drawdown</th><th>Folds</th><th>Live</th></tr>
             </thead>
             <tbody>
               {candidates.map((candidate) => (
                 <tr key={`${candidate.symbol}-${candidate.family}`} className="border-t border-neutral-200 dark:border-neutral-800">
                   <td className="py-2 font-medium">{candidate.symbol}</td>
                   <td>{candidate.family}</td>
+                  <td className="font-mono text-xs">{formatParameters(candidate.family, candidate.parameters)}</td>
                   <td>{Number(candidate.score).toFixed(2)}</td>
                   <td>{Number(candidate.return_pct).toFixed(2)}%</td>
                   <td>{Number(candidate.drawdown_pct).toFixed(2)}%</td>
@@ -285,13 +259,34 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: React.ReactNode;
+}) {
   return (
     <section className="mb-8">
       <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-neutral-500">{title}</h2>
+      {description ? (
+        <p className="mb-3 max-w-4xl text-sm leading-relaxed text-neutral-500">{description}</p>
+      ) : null}
       <div className="rounded-md border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">{children}</div>
     </section>
   );
+}
+
+function formatParameters(family: string, parameters: Record<string, number>) {
+  if (family === "trend") {
+    return `${parameters.fast}d / ${parameters.slow}d averages`;
+  }
+  if (family === "breakout") {
+    return `buy ${parameters.entryDays}d high / exit ${parameters.exitDays}d low`;
+  }
+  return `${parameters.lookback}d average / ${parameters.thresholdBps / 100}% dip`;
 }
 
 function Empty({ text }: { text: string }) {

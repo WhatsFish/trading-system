@@ -57,14 +57,9 @@ out-of-sample comparisons:
 The `research` container has no OKX credentials. The credential-bearing
 `worker` image intentionally does not install `yfinance`.
 
-The shadow portfolio is marked every 15 minutes and may simulate fills only in
-the configured New York close window:
-
-```bash
-./scripts/run-shadow.sh
-```
-
-It maintains a separate 30 USDT virtual ledger and cannot send real orders.
+The earlier shadow portfolio is retained as an offline diagnostic tool but is
+not scheduled or shown on the primary dashboard. Live experiments are the
+operational source of trading experience.
 
 The weekday research job also evaluates a bounded 420-combination strategy
 grid and updates the candidate leaderboard. Every rejected experiment remains
