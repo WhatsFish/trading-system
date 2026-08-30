@@ -23,6 +23,7 @@ export default async function TradingDashboard() {
     candidates,
     executionAudits,
     liveState,
+    liveExperiments,
   } = await dashboardData();
   const stale = !heartbeat || Date.now() - new Date(heartbeat.last_seen_at).getTime() > 180_000;
 
@@ -42,7 +43,7 @@ export default async function TradingDashboard() {
           {stale
             ? "worker stale"
             : liveState?.execution_enabled
-              ? `live · max 5 USDT${liveState.managed_instrument ? ` · ${liveState.managed_instrument.replace("-USDT-SWAP", "")}` : ""}`
+              ? `live · dynamic sizing${liveState.managed_instrument ? ` · ${liveState.managed_instrument.replace("-USDT-SWAP", "")}` : ""}`
               : `${heartbeat?.status ?? "unknown"} · observe`}
         </div>
       </header>
@@ -177,7 +178,7 @@ export default async function TradingDashboard() {
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="text-xs text-neutral-500">
-              <tr><th>Symbol</th><th>Family</th><th>Score</th><th>Return</th><th>Drawdown</th><th>Folds</th></tr>
+              <tr><th>Symbol</th><th>Family</th><th>Score</th><th>Return</th><th>Drawdown</th><th>Folds</th><th>Live</th></tr>
             </thead>
             <tbody>
               {candidates.map((candidate) => (
@@ -188,6 +189,7 @@ export default async function TradingDashboard() {
                   <td>{Number(candidate.return_pct).toFixed(2)}%</td>
                   <td>{Number(candidate.drawdown_pct).toFixed(2)}%</td>
                   <td>{candidate.positive_folds}/3</td>
+                  <td>{candidate.live_experience_count}</td>
                 </tr>
               ))}
             </tbody>
@@ -196,7 +198,7 @@ export default async function TradingDashboard() {
         </div>
       </Section>
 
-      <Section title="Execution transport audit · automation locked">
+      <Section title="Execution audit">
         <div className="divide-y divide-neutral-200 dark:divide-neutral-800">
           {executionAudits.map((audit, index) => (
             <div key={`${audit.ts}-${index}`} className="flex flex-wrap justify-between gap-2 py-2 text-sm">
@@ -205,6 +207,44 @@ export default async function TradingDashboard() {
             </div>
           ))}
           {!executionAudits.length && <Empty text="No real transport test has been recorded." />}
+        </div>
+      </Section>
+
+      <Section title="Live trading experiments and lessons">
+        <div className="space-y-3">
+          {liveExperiments.map((experiment) => (
+            <article key={experiment.id} className="rounded-md border border-neutral-200 p-4 dark:border-neutral-800">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="font-medium">
+                  {experiment.instrument.replace("-USDT-SWAP", "")} · {experiment.strategy}
+                </h3>
+                <span className="rounded bg-neutral-100 px-2 py-0.5 text-xs uppercase dark:bg-neutral-800">
+                  {experiment.status}
+                </span>
+              </div>
+              <p className="mt-2 text-sm text-neutral-600 dark:text-neutral-400">
+                {experiment.hypothesis}
+              </p>
+              <p className="mt-2 text-xs text-neutral-500">
+                entry {experiment.entry_quantity} @ {money(experiment.entry_price)}
+                {" · "}MFE {Number(experiment.max_favorable_pct).toFixed(2)}%
+                {" · "}MAE {Number(experiment.max_adverse_pct).toFixed(2)}%
+              </p>
+              {experiment.postmortem?.summary && (
+                <p className="mt-3 border-t border-neutral-200 pt-3 text-sm dark:border-neutral-800">
+                  {experiment.postmortem.summary}
+                </p>
+              )}
+              {experiment.postmortem?.lessonCodes?.length ? (
+                <p className="mt-1 text-xs text-neutral-500">
+                  lessons: {experiment.postmortem.lessonCodes.join(", ")}
+                </p>
+              ) : null}
+            </article>
+          ))}
+          {!liveExperiments.length && (
+            <Empty text="No live strategy experiment has entered yet. Future trades will be recorded with context and postmortems." />
+          )}
         </div>
       </Section>
 

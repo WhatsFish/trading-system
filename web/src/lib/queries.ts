@@ -113,6 +113,8 @@ export type Candidate = {
   positive_folds: number;
   trades: number;
   promoted_at: Date;
+  live_experience_count: number;
+  live_adjustment: string;
 };
 
 export type ExecutionAudit = {
@@ -129,6 +131,28 @@ export type LiveState = {
   controller_status: string | null;
   controller_seen_at: Date | null;
   managed_instrument: string | null;
+};
+
+export type LiveExperiment = {
+  id: string;
+  instrument: string;
+  strategy: string;
+  hypothesis: string;
+  entry_time: Date;
+  entry_quantity: string;
+  entry_price: string;
+  status: string;
+  exit_time: Date | null;
+  exit_reason: string | null;
+  net_pnl: string | null;
+  return_pct: string | null;
+  max_favorable_pct: string;
+  max_adverse_pct: string;
+  postmortem: {
+    outcome?: string;
+    summary?: string;
+    lessonCodes?: string[];
+  } | null;
 };
 
 export async function dashboardData() {
@@ -154,6 +178,7 @@ export async function dashboardData() {
     candidates,
     executionAudits,
     liveStates,
+    liveExperiments,
   ] = await Promise.all([
     account
       ? query<Position>(
@@ -233,7 +258,8 @@ export async function dashboardData() {
     query<Candidate>(
       `SELECT c.symbol, c.family, c.score, c.promoted_at,
          e.parameters, e.return_pct, e.drawdown_pct,
-         e.positive_folds, e.trades
+         e.positive_folds, e.trades, e.live_experience_count,
+         e.live_adjustment
        FROM strategy_candidate c
        JOIN strategy_experiment e ON e.id = c.experiment_id
        ORDER BY c.score DESC LIMIT 20`,
@@ -252,6 +278,12 @@ export async function dashboardData() {
        FROM (SELECT 1) seed
        LEFT JOIN worker_heartbeat h ON h.worker = 'live-controller'`,
     ),
+    query<LiveExperiment>(
+      `SELECT id, instrument, strategy, hypothesis, entry_time,
+         entry_quantity, entry_price, status, exit_time, exit_reason,
+         net_pnl, return_pct, max_favorable_pct, max_adverse_pct, postmortem
+       FROM live_experiment ORDER BY entry_time DESC LIMIT 20`,
+    ),
   ]);
   return {
     account,
@@ -267,6 +299,7 @@ export async function dashboardData() {
     candidates,
     executionAudits,
     liveState: liveStates[0],
+    liveExperiments,
     heartbeat: heartbeat[0] ?? null,
   };
 }

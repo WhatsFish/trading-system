@@ -184,10 +184,16 @@ CREATE TABLE IF NOT EXISTS strategy_experiment (
   trades           INTEGER     NOT NULL,
   positive_folds   INTEGER     NOT NULL,
   score            NUMERIC     NOT NULL,
+  live_experience_count INTEGER NOT NULL DEFAULT 0,
+  live_adjustment  NUMERIC     NOT NULL DEFAULT 0,
   eligible         BOOLEAN     NOT NULL,
   rejection_reason TEXT,
   generated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE strategy_experiment
+  ADD COLUMN IF NOT EXISTS live_experience_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE strategy_experiment
+  ADD COLUMN IF NOT EXISTS live_adjustment NUMERIC NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS strategy_experiment_rank
   ON strategy_experiment (run_id, eligible, score DESC);
 
@@ -229,6 +235,7 @@ ALTER TABLE protective_order
 CREATE TABLE IF NOT EXISTS live_position (
   instrument       TEXT        PRIMARY KEY,
   strategy         TEXT        NOT NULL,
+  strategy_parameters JSONB    NOT NULL,
   entry_order_id   TEXT        NOT NULL,
   entry_client_order_id TEXT    NOT NULL,
   owned_quantity   NUMERIC     NOT NULL CHECK (owned_quantity > 0),
@@ -241,11 +248,70 @@ CREATE TABLE IF NOT EXISTS live_position (
 ALTER TABLE live_position ADD COLUMN IF NOT EXISTS entry_client_order_id TEXT;
 ALTER TABLE live_position ADD COLUMN IF NOT EXISTS owned_quantity NUMERIC;
 ALTER TABLE live_position ADD COLUMN IF NOT EXISTS average_price NUMERIC;
+ALTER TABLE live_position ADD COLUMN IF NOT EXISTS strategy_parameters JSONB;
 ALTER TABLE live_position ADD COLUMN IF NOT EXISTS exit_client_order_id TEXT;
 ALTER TABLE live_position ADD COLUMN IF NOT EXISTS exit_state TEXT;
 ALTER TABLE live_position ALTER COLUMN entry_client_order_id SET NOT NULL;
 ALTER TABLE live_position ALTER COLUMN owned_quantity SET NOT NULL;
 ALTER TABLE live_position ALTER COLUMN average_price SET NOT NULL;
+UPDATE live_position SET strategy_parameters = '{}'::jsonb
+WHERE strategy_parameters IS NULL;
+ALTER TABLE live_position ALTER COLUMN strategy_parameters SET NOT NULL;
+
+CREATE TABLE IF NOT EXISTS live_experiment (
+  id                BIGSERIAL   PRIMARY KEY,
+  instrument        TEXT        NOT NULL,
+  strategy          TEXT        NOT NULL,
+  strategy_parameters JSONB     NOT NULL,
+  hypothesis        TEXT        NOT NULL,
+  entry_order_id    TEXT        NOT NULL UNIQUE,
+  entry_client_order_id TEXT     NOT NULL UNIQUE,
+  entry_time        TIMESTAMPTZ NOT NULL,
+  entry_quantity    NUMERIC     NOT NULL,
+  entry_price       NUMERIC     NOT NULL,
+  entry_fee         NUMERIC     NOT NULL DEFAULT 0,
+  entry_context     JSONB       NOT NULL,
+  status            TEXT        NOT NULL DEFAULT 'open',
+  exit_order_id     TEXT,
+  exit_time         TIMESTAMPTZ,
+  exit_price        NUMERIC,
+  exit_fee          NUMERIC,
+  exit_reason       TEXT,
+  gross_pnl         NUMERIC,
+  net_pnl           NUMERIC,
+  return_pct        NUMERIC,
+  max_favorable_pct NUMERIC     NOT NULL DEFAULT 0,
+  max_adverse_pct   NUMERIC     NOT NULL DEFAULT 0,
+  postmortem        JSONB,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS live_experiment_recent
+  ON live_experiment (entry_time DESC);
+
+CREATE TABLE IF NOT EXISTS live_experiment_observation (
+  experiment_id  BIGINT      NOT NULL REFERENCES live_experiment(id) ON DELETE CASCADE,
+  ts             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  mark_price     NUMERIC     NOT NULL,
+  underlying_price NUMERIC,
+  basis_bps      NUMERIC,
+  unrealized_pnl NUMERIC     NOT NULL,
+  return_pct     NUMERIC     NOT NULL,
+  PRIMARY KEY (experiment_id, ts)
+);
+CREATE INDEX IF NOT EXISTS live_experiment_observation_recent
+  ON live_experiment_observation (experiment_id, ts DESC);
+
+CREATE TABLE IF NOT EXISTS live_experiment_exit_fill (
+  experiment_id BIGINT      NOT NULL REFERENCES live_experiment(id) ON DELETE CASCADE,
+  order_id      TEXT        NOT NULL,
+  filled_at     TIMESTAMPTZ NOT NULL,
+  quantity      NUMERIC     NOT NULL,
+  price         NUMERIC     NOT NULL,
+  fee           NUMERIC     NOT NULL,
+  reason        TEXT        NOT NULL,
+  PRIMARY KEY (experiment_id, order_id)
+);
 
 CREATE TABLE IF NOT EXISTS shadow_account (
   id            SMALLINT    PRIMARY KEY CHECK (id = 1),

@@ -36,14 +36,14 @@ class ExecutorTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             validate_intent(
                 self.intent(), self.settings(), False,
-                Decimal("200"), Decimal("0.01"), Decimal("0.01"),
+                Decimal("200"), Decimal("0.01"), Decimal("0.01"), Decimal("5"),
             )
 
     def test_notional_cap_is_hard(self) -> None:
         with self.assertRaises(ValueError):
             validate_intent(
                 self.intent(size=Decimal("0.03")), self.settings("live"), True,
-                Decimal("200"), Decimal("0.01"), Decimal("0.01"),
+                Decimal("200"), Decimal("0.01"), Decimal("0.01"), Decimal("5"),
             )
 
     def test_short_opening_is_disabled(self) -> None:
@@ -63,7 +63,7 @@ class ExecutorTests(unittest.TestCase):
     def test_bounded_long_can_pass_all_gates(self) -> None:
         validate_intent(
             self.intent(), self.settings("live"), True,
-            Decimal("200"), Decimal("0.01"), Decimal("0.01"),
+            Decimal("200"), Decimal("0.01"), Decimal("0.01"), Decimal("5"),
         )
 
     def test_ioc_price_ceiling_enforces_entry_cap(self) -> None:
@@ -74,6 +74,7 @@ class ExecutorTests(unittest.TestCase):
             Decimal("200"),
             Decimal("0.01"),
             Decimal("0.01"),
+            Decimal("5"),
         )
 
     def test_reduce_only_exit_can_close_appreciated_position(self) -> None:

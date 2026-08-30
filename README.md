@@ -87,5 +87,12 @@ can be changed without rebuilding or stopping account observation:
 ./scripts/live-on.sh
 ```
 
-The active policy allows at most one system-managed long with a 5 USDT entry
-cap, 1x isolated leverage, an atomic attached 5% stop, and no short opening.
+The active policy allows at most one system-managed long, sized up to 35% of
+current equity, with 1x isolated leverage, an atomic attached 5% stop, and no
+short opening. The executor enforces the exact notional authorized by the
+corresponding risk decision rather than a fixed dollar cap.
+
+Live experiments retain their hypothesis, entry context, fees, mark-to-market
+path, MFE/MAE, outcome, and deterministic postmortem. After five closed samples
+in a symbol/strategy family, live outcomes receive a bounded weight in the
+next strategy-lab ranking.

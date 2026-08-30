@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from .database import Database
 
 
-MAX_LIVE_NOTIONAL = Decimal("5")
+TRANSPORT_TEST_MAX_NOTIONAL = Decimal("5")
 LIVE_ACK = "I_UNDERSTAND_LIVE_TRADING_RISK"
 TRANSPORT_TEST_ACK = "PLACE_AND_CANCEL_REAL_ORDER"
 
@@ -47,6 +47,7 @@ def validate_intent(
     last_price: Decimal,
     lot_size: Decimal,
     minimum_size: Decimal,
+    authorized_entry_notional: Decimal | None = None,
 ) -> None:
     if intent.instrument not in BY_INSTRUMENT:
         raise ValueError("instrument is outside the equity allowlist")
@@ -66,8 +67,11 @@ def validate_intent(
     if intent.order_type == "market" and intent.price is not None:
         raise ValueError("market order cannot carry a limit price")
     reference = intent.price or last_price
-    if intent.action == "buy" and intent.size * reference > MAX_LIVE_NOTIONAL:
-        raise ValueError("order exceeds 5 USDT live cap")
+    if intent.action == "buy" and (
+        authorized_entry_notional is None
+        or intent.size * reference > authorized_entry_notional
+    ):
+        raise ValueError("order exceeds risk-authorized entry notional")
     if intent.action == "sell" and not intent.reduce_only:
         raise ValueError("short opening is disabled")
     if settings.mode != "live" or settings.live_ack != LIVE_ACK:
@@ -96,14 +100,6 @@ class Executor:
         ticker = self.client.ticker(intent.instrument)
         with self.database.connect() as connection:
             enabled = self.database.execution_enabled(connection)
-            validate_intent(
-                intent,
-                self.settings,
-                enabled,
-                Decimal(ticker["last"]),
-                Decimal(details["lotSz"]),
-                Decimal(details["minSz"]),
-            )
             existing = connection.execute(
                 """
                 SELECT exchange_order_id FROM execution_audit
@@ -143,7 +139,7 @@ class Executor:
                     return recovered["ordId"]
             risk = connection.execute(
                 """
-                SELECT r.approved, s.instrument, s.action
+                SELECT r.approved, s.instrument, s.action, r.proposed_notional
                 FROM risk_decision r
                 JOIN strategy_signal s ON s.id = r.signal_id
                 WHERE r.id = %s
@@ -158,6 +154,15 @@ class Executor:
                 or risk[2] != intent.action
             ):
                 raise PermissionError("fresh matching approved risk decision required")
+            validate_intent(
+                intent,
+                self.settings,
+                enabled,
+                Decimal(ticker["last"]),
+                Decimal(details["lotSz"]),
+                Decimal(details["minSz"]),
+                Decimal(risk[3]) if intent.action == "buy" else None,
+            )
             audit_detail = json.dumps(
                 {
                     "riskDecisionId": intent.risk_decision_id,
@@ -251,7 +256,7 @@ def transport_test(settings: Settings) -> dict:
     size = Decimal(details["minSz"])
     price = floor_step(Decimal(ticker["bidPx"]) * Decimal("0.5"), tick)
     stop_trigger = floor_step(price * Decimal("0.95"), tick)
-    if size * price > MAX_LIVE_NOTIONAL:
+    if size * price > TRANSPORT_TEST_MAX_NOTIONAL:
         raise ValueError("transport test exceeds live cap")
     with database.connect() as connection:
         if database.execution_enabled(connection):

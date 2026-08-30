@@ -123,7 +123,7 @@ def record_decision(
     account: dict,
     positions: list[dict],
     details: dict,
-) -> tuple[int, bool, tuple[str, ...]]:
+) -> tuple[int, bool, tuple[str, ...], Decimal]:
     with database.connect() as connection:
         stale, basis, event_risk = database.latest_reference_risk(
             connection, instrument
@@ -162,18 +162,25 @@ def record_decision(
             f"lab-{strategy}",
         )
         connection.commit()
-        return decision_id, decision.approved, decision.reasons
+        return (
+            decision_id,
+            decision.approved,
+            decision.reasons,
+            decision.proposed_notional,
+        )
 
 
 def recover_incomplete_entries(
     client: OkxClient, database: Database
 ) -> bool:
+    from psycopg.types.json import Jsonb
+
     unresolved = False
     with database.connect() as connection:
         audits = connection.execute(
             """
             SELECT a.client_order_id, a.instrument, a.detail,
-              COALESCE(s.strategy, '')
+              COALESCE(s.strategy, ''), COALESCE(s.features, '{}'::jsonb)
             FROM execution_audit a
             LEFT JOIN risk_decision r
               ON r.id = (a.detail->>'riskDecisionId')::bigint
@@ -183,7 +190,7 @@ def recover_incomplete_entries(
             ORDER BY a.ts
             """
         ).fetchall()
-        for client_id, instrument, detail, strategy_name in audits:
+        for client_id, instrument, detail, strategy_name, features in audits:
             try:
                 order = client.order_by_client_id(instrument, client_id)
             except OkxError:
@@ -201,15 +208,18 @@ def recover_incomplete_entries(
             )
             if filled > 0:
                 family = strategy_name.removeprefix("lab-")
+                parameters = json.loads(features.get("parameters", "{}"))
                 connection.execute(
                     """
                     INSERT INTO live_position
                       (instrument, strategy, entry_order_id,
-                       entry_client_order_id, owned_quantity, average_price)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                       entry_client_order_id, owned_quantity, average_price,
+                       strategy_parameters)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (instrument) DO UPDATE SET
                       owned_quantity = EXCLUDED.owned_quantity,
                       average_price = EXCLUDED.average_price,
+                      strategy_parameters = EXCLUDED.strategy_parameters,
                       updated_at = NOW()
                     """,
                     (
@@ -219,6 +229,61 @@ def recover_incomplete_entries(
                         client_id,
                         filled,
                         Decimal(order["avgPx"]),
+                        Jsonb(parameters),
+                    ),
+                )
+                basis = connection.execute(
+                    """
+                    SELECT underlying_price, basis_bps, underlying_quoted_at,
+                           reference_stale
+                    FROM basis_snapshot
+                    WHERE instrument = %s ORDER BY ts DESC LIMIT 1
+                    """,
+                    (instrument,),
+                ).fetchone()
+                recent_news = connection.execute(
+                    """
+                    SELECT COUNT(*) FROM news_item
+                    WHERE published_at > NOW() - INTERVAL '24 hours'
+                    """
+                ).fetchone()[0]
+                connection.execute(
+                    """
+                    INSERT INTO live_experiment
+                      (instrument, strategy, strategy_parameters, hypothesis,
+                       entry_order_id, entry_client_order_id, entry_time,
+                       entry_quantity, entry_price, entry_fee, entry_context)
+                    VALUES (%s, %s, %s, %s, %s, %s,
+                            to_timestamp(%s / 1000.0), %s, %s, %s, %s)
+                    ON CONFLICT (entry_order_id) DO NOTHING
+                    """,
+                    (
+                        instrument,
+                        family,
+                        Jsonb(parameters),
+                        (
+                            f"{family} signal remains valid until its "
+                            "parameterized exit or the 5% protective stop."
+                        ),
+                        order["ordId"],
+                        client_id,
+                        int(order.get("cTime") or int(time.time() * 1000)),
+                        filled,
+                        Decimal(order["avgPx"]),
+                        abs(Decimal(order.get("fee") or "0")),
+                        Jsonb(
+                            {
+                                "underlyingPrice": str(basis[0]) if basis else None,
+                                "basisBps": str(basis[1]) if basis else None,
+                                "underlyingQuotedAt": (
+                                    basis[2].isoformat() if basis else None
+                                ),
+                                "referenceStale": bool(basis[3]) if basis else True,
+                                "recentNewsCount": recent_news,
+                                "riskDecisionId": detail.get("riskDecisionId"),
+                                "stopTriggerPrice": detail.get("stopTriggerPrice"),
+                            }
+                        ),
                     ),
                 )
                 stop_client_id = detail.get("stopClientOrderId")
@@ -258,6 +323,297 @@ def recover_incomplete_entries(
                 unresolved = True
         connection.commit()
     return unresolved
+
+
+def observe_experiment(
+    database: Database,
+    instrument: str,
+    mark_price: Decimal,
+    owned_quantity: Decimal,
+    average_price: Decimal,
+) -> None:
+    unrealized = owned_quantity * (mark_price - average_price)
+    return_pct = (
+        (mark_price / average_price - 1) * Decimal("100")
+        if average_price > 0
+        else Decimal("0")
+    )
+    with database.connect() as connection:
+        experiment = connection.execute(
+            """
+            SELECT id FROM live_experiment
+            WHERE instrument = %s AND status = 'open'
+            ORDER BY entry_time DESC LIMIT 1
+            """,
+            (instrument,),
+        ).fetchone()
+        if not experiment:
+            return
+        basis = connection.execute(
+            """
+            SELECT underlying_price, basis_bps FROM basis_snapshot
+            WHERE instrument = %s ORDER BY ts DESC LIMIT 1
+            """,
+            (instrument,),
+        ).fetchone()
+        connection.execute(
+            """
+            INSERT INTO live_experiment_observation
+              (experiment_id, mark_price, underlying_price, basis_bps,
+               unrealized_pnl, return_pct)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                experiment[0],
+                mark_price,
+                basis[0] if basis else None,
+                basis[1] if basis else None,
+                unrealized,
+                return_pct,
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE live_experiment
+            SET max_favorable_pct = GREATEST(max_favorable_pct, %s),
+                max_adverse_pct = LEAST(max_adverse_pct, %s),
+                updated_at = NOW()
+            WHERE id = %s
+            """,
+            (return_pct, return_pct, experiment[0]),
+        )
+        connection.commit()
+
+
+def finalize_experiment(
+    database: Database,
+    instrument: str,
+    exit_order: dict,
+    reason: str,
+) -> None:
+    from psycopg.types.json import Jsonb
+
+    with database.connect() as connection:
+        row = connection.execute(
+            """
+            SELECT id, entry_quantity, entry_price, entry_fee,
+                   max_favorable_pct, max_adverse_pct
+            FROM live_experiment
+            WHERE instrument = %s AND status = 'open'
+            ORDER BY entry_time DESC LIMIT 1
+            FOR UPDATE
+            """,
+            (instrument,),
+        ).fetchone()
+        if not row:
+            return
+        fill_time = int(
+            exit_order.get("fillTime")
+            or exit_order.get("uTime")
+            or exit_order.get("cTime")
+            or int(time.time() * 1000)
+        )
+        connection.execute(
+            """
+            INSERT INTO live_experiment_exit_fill
+              (experiment_id, order_id, filled_at, quantity, price, fee, reason)
+            VALUES (%s, %s, to_timestamp(%s / 1000.0), %s, %s, %s, %s)
+            ON CONFLICT (experiment_id, order_id) DO UPDATE SET
+              quantity = EXCLUDED.quantity, price = EXCLUDED.price,
+              fee = EXCLUDED.fee, reason = EXCLUDED.reason
+            """,
+            (
+                row[0],
+                exit_order["ordId"],
+                fill_time,
+                Decimal(exit_order["accFillSz"]),
+                Decimal(exit_order["avgPx"]),
+                abs(Decimal(exit_order.get("fee") or "0")),
+                reason,
+            ),
+        )
+        aggregate = connection.execute(
+            """
+            SELECT SUM(quantity), SUM(quantity * price), SUM(fee), MAX(filled_at)
+            FROM live_experiment_exit_fill WHERE experiment_id = %s
+            """,
+            (row[0],),
+        ).fetchone()
+        quantity = min(Decimal(row[1]), Decimal(aggregate[0]))
+        exit_value = Decimal(aggregate[1])
+        exit_fee = Decimal(aggregate[2])
+        exit_price = exit_value / Decimal(aggregate[0])
+        gross = exit_value - quantity * Decimal(row[2])
+        net = gross - Decimal(row[3]) - exit_fee
+        notional = quantity * Decimal(row[2])
+        return_pct = (
+            net / notional * Decimal("100") if notional > 0 else Decimal("0")
+        )
+        mfe = Decimal(row[4])
+        mae = Decimal(row[5])
+        lessons = []
+        if net < 0 and mfe <= 0:
+            lessons.append("entry_thesis_never_gained")
+        elif net < 0 and mfe > 0:
+            lessons.append("gave_back_open_profit")
+        if reason == "protective stop":
+            lessons.append("protective_stop_limited_loss")
+        if exit_fee + Decimal(row[3]) > abs(gross) and gross != 0:
+            lessons.append("costs_dominated_gross_result")
+        if mae < Decimal("-3"):
+            lessons.append("large_adverse_excursion")
+        outcome = "win" if net > 0 else "loss" if net < 0 else "flat"
+        postmortem = {
+            "outcome": outcome,
+            "summary": (
+                f"{outcome}: net {net:.6f} USDT ({return_pct:.2f}%), "
+                f"MFE {mfe:.2f}%, MAE {mae:.2f}%, exit={reason}."
+            ),
+            "lessonCodes": lessons,
+            "fees": str(exit_fee + Decimal(row[3])),
+        }
+        connection.execute(
+            """
+            UPDATE live_experiment SET
+              status = 'closed', exit_order_id = %s,
+              exit_time = to_timestamp(%s / 1000.0), exit_price = %s,
+              exit_fee = %s, exit_reason = %s, gross_pnl = %s,
+              net_pnl = %s, return_pct = %s, postmortem = %s,
+              updated_at = NOW()
+            WHERE id = %s
+            """,
+            (
+                exit_order["ordId"],
+                int(aggregate[3].timestamp() * 1000),
+                exit_price,
+                exit_fee,
+                reason,
+                gross,
+                net,
+                return_pct,
+                Jsonb(postmortem),
+                row[0],
+            ),
+        )
+        connection.commit()
+
+
+def record_partial_exit(
+    database: Database,
+    instrument: str,
+    exit_order: dict,
+    reason: str,
+) -> None:
+    with database.connect() as connection:
+        experiment = connection.execute(
+            """
+            SELECT id FROM live_experiment
+            WHERE instrument = %s AND status = 'open'
+            ORDER BY entry_time DESC LIMIT 1
+            """,
+            (instrument,),
+        ).fetchone()
+        if not experiment:
+            return
+        fill_time = int(
+            exit_order.get("fillTime")
+            or exit_order.get("uTime")
+            or exit_order.get("cTime")
+            or int(time.time() * 1000)
+        )
+        connection.execute(
+            """
+            INSERT INTO live_experiment_exit_fill
+              (experiment_id, order_id, filled_at, quantity, price, fee, reason)
+            VALUES (%s, %s, to_timestamp(%s / 1000.0), %s, %s, %s, %s)
+            ON CONFLICT (experiment_id, order_id) DO UPDATE SET
+              quantity = EXCLUDED.quantity, price = EXCLUDED.price,
+              fee = EXCLUDED.fee, reason = EXCLUDED.reason
+            """,
+            (
+                experiment[0],
+                exit_order["ordId"],
+                fill_time,
+                Decimal(exit_order["accFillSz"]),
+                Decimal(exit_order["avgPx"]),
+                abs(Decimal(exit_order.get("fee") or "0")),
+                reason,
+            ),
+        )
+        connection.commit()
+
+
+def mark_experiment_unreconciled(
+    database: Database, instrument: str, reason: str
+) -> None:
+    from psycopg.types.json import Jsonb
+
+    with database.connect() as connection:
+        connection.execute(
+            """
+            UPDATE live_experiment
+            SET status = 'closed_unreconciled', exit_reason = %s,
+                postmortem = %s, updated_at = NOW()
+            WHERE instrument = %s
+              AND status IN ('open', 'open_unreconciled')
+            """,
+            (
+                reason,
+                Jsonb(
+                    {
+                        "outcome": "unknown",
+                        "summary": "Position changed outside the controller; exact PnL requires manual review.",
+                        "lessonCodes": ["external_intervention"],
+                    }
+                ),
+                instrument,
+            ),
+        )
+        connection.commit()
+
+
+def ensure_managed_experiment(database: Database, managed: dict) -> None:
+    from psycopg.types.json import Jsonb
+
+    with database.connect() as connection:
+        exists = connection.execute(
+            """
+            SELECT 1 FROM live_experiment
+            WHERE entry_order_id = %s
+            """,
+            (managed["entry_order_id"],),
+        ).fetchone()
+        if exists:
+            return
+        connection.execute(
+            """
+            INSERT INTO live_experiment
+              (instrument, strategy, strategy_parameters, hypothesis,
+               entry_order_id, entry_client_order_id, entry_time,
+               entry_quantity, entry_price, entry_context, status)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s,
+                    'open_unreconciled')
+            ON CONFLICT (entry_order_id) DO NOTHING
+            """,
+            (
+                managed["instrument"],
+                managed["strategy"],
+                Jsonb(managed.get("strategy_parameters") or {}),
+                "Legacy managed position discovered after experience-ledger migration.",
+                managed["entry_order_id"],
+                managed["entry_client_order_id"],
+                managed["owned_quantity"],
+                managed["average_price"],
+                Jsonb(
+                    {
+                        "backfilled": True,
+                        "learningEligible": False,
+                        "reason": "exact historical entry context unavailable",
+                    }
+                ),
+            ),
+        )
+        connection.commit()
 
 
 def protection_is_live(
@@ -343,6 +699,9 @@ def protection_is_live(
                         "DELETE FROM live_position WHERE instrument = %s",
                         (instrument,),
                     )
+                    finalize_experiment(
+                        database, instrument, spawned, "protective stop"
+                    )
                 else:
                     connection.execute(
                         """
@@ -352,6 +711,13 @@ def protection_is_live(
                         """,
                         (remaining, instrument),
                     )
+                    if delta > 0:
+                        record_partial_exit(
+                            database,
+                            instrument,
+                            spawned,
+                            "protective stop partial fill",
+                        )
                 if (
                     remaining > 0
                     and spawned.get("state") not in {"canceled", "filled"}
@@ -436,6 +802,9 @@ def close_owned_position(
                 (instrument,),
             )
             connection.commit()
+        mark_experiment_unreconciled(
+            database, instrument, "position absent outside controller exit"
+        )
         return
     owned = min(
         Decimal(managed["owned_quantity"]),
@@ -465,7 +834,7 @@ def close_owned_position(
         )
         connection.commit()
     price = Decimal(client.ticker(instrument)["last"])
-    decision_id, approved, reasons = record_decision(
+    decision_id, approved, reasons, _ = record_decision(
         settings,
         database,
         instrument,
@@ -506,6 +875,9 @@ def close_owned_position(
         filled = Decimal(order.get("accFillSz") or "0")
         if filled >= owned:
             cancel_protection(client, database, instrument)
+            finalize_experiment(
+                database, instrument, order, reason
+            )
             with database.connect() as connection:
                 connection.execute(
                     "DELETE FROM live_position WHERE instrument = %s",
@@ -528,6 +900,7 @@ def close_owned_position(
                 connection.commit()
             raise RuntimeError("managed exit had zero fill; protected retry required")
         if order.get("state") in {"canceled", "filled"} and filled > 0:
+            record_partial_exit(database, instrument, order, reason)
             remaining = owned - filled
             with database.connect() as connection:
                 connection.execute(
@@ -547,15 +920,13 @@ def close_owned_position(
 def load_candidate(connection, managed: dict | None) -> dict | None:
     if managed:
         symbol = managed["instrument"].split("-", 1)[0]
-        row = connection.execute(
-            """
-            SELECT e.symbol, e.family, e.parameters
-            FROM strategy_candidate c
-            JOIN strategy_experiment e ON e.id = c.experiment_id
-            WHERE c.symbol = %s AND c.family = %s
-            """,
-            (symbol, managed["strategy"]),
-        ).fetchone()
+        if not managed.get("strategy_parameters"):
+            return None
+        return {
+            "symbol": symbol,
+            "family": managed["strategy"],
+            "parameters": managed["strategy_parameters"],
+        }
     else:
         row = connection.execute(
             """
@@ -581,7 +952,8 @@ def run_cycle(
         row = connection.execute(
             """
             SELECT instrument, strategy, owned_quantity, average_price,
-                   exit_client_order_id
+                   exit_client_order_id, strategy_parameters,
+                   entry_order_id, entry_client_order_id
             FROM live_position LIMIT 1
             """
         ).fetchone()
@@ -592,6 +964,9 @@ def run_cycle(
                 "owned_quantity": row[2],
                 "average_price": row[3],
                 "exit_client_order_id": row[4],
+                "strategy_parameters": row[5],
+                "entry_order_id": row[6],
+                "entry_client_order_id": row[7],
             }
             if row
             else None
@@ -613,6 +988,7 @@ def run_cycle(
         return
 
     if managed:
+        ensure_managed_experiment(database, managed)
         instrument = managed["instrument"]
         details = client.instrument(instrument)
         if managed["exit_client_order_id"]:
@@ -633,7 +1009,9 @@ def run_cycle(
         with database.connect() as connection:
             refreshed = connection.execute(
                 """
-                SELECT instrument, strategy, owned_quantity, average_price
+                SELECT instrument, strategy, owned_quantity, average_price,
+                       strategy_parameters, entry_order_id,
+                       entry_client_order_id
                 FROM live_position WHERE instrument = %s
                 """,
                 (instrument,),
@@ -645,6 +1023,9 @@ def run_cycle(
             "strategy": refreshed[1],
             "owned_quantity": refreshed[2],
             "average_price": refreshed[3],
+            "strategy_parameters": refreshed[4],
+            "entry_order_id": refreshed[5],
+            "entry_client_order_id": refreshed[6],
         }
         positions = client.positions()
         aggregate = current_position(positions, instrument)
@@ -657,6 +1038,9 @@ def run_cycle(
                     (instrument,),
                 )
                 connection.commit()
+            mark_experiment_unreconciled(
+                database, instrument, "aggregate position disappeared"
+            )
             return
         if not protection_live:
             logging.error("attached stop unavailable; closing managed position")
@@ -675,6 +1059,13 @@ def run_cycle(
             return
         owned = Decimal(managed["owned_quantity"])
         aggregate_size = Decimal(aggregate["pos"])
+        observe_experiment(
+            database,
+            instrument,
+            Decimal(aggregate.get("markPx") or aggregate.get("last")),
+            owned,
+            Decimal(managed["average_price"]),
+        )
         if aggregate_size > owned:
             logging.critical(
                 "manual quantity detected on managed instrument=%s "
@@ -688,6 +1079,11 @@ def run_cycle(
             )
             return
         if aggregate_size < owned:
+            mark_experiment_unreconciled(
+                database,
+                instrument,
+                "external reduction made fill attribution incomplete",
+            )
             managed["owned_quantity"] = aggregate_size
             with database.connect() as connection:
                 connection.execute(
@@ -765,7 +1161,7 @@ def run_cycle(
     details = client.instrument(instrument)
     ticker = client.ticker(instrument)
     last = Decimal(ticker["last"])
-    decision_id, approved, reasons = record_decision(
+    decision_id, approved, reasons, authorized_notional = record_decision(
         settings,
         database,
         instrument,
@@ -785,7 +1181,7 @@ def run_cycle(
         Decimal(ticker["askPx"]) * (Decimal("1") + ENTRY_PRICE_BUFFER),
         Decimal(details["tickSz"]),
     )
-    budget = min(Decimal("5"), Decimal(account["totalEq"]) * Decimal("0.20"))
+    budget = authorized_notional
     size = floor_step(budget / ceiling, Decimal(details["lotSz"]))
     if size < Decimal(details["minSz"]):
         logging.info("live entry below minimum size instrument=%s", instrument)
@@ -828,7 +1224,9 @@ def run_cycle(
         with database.connect() as connection:
             managed_row = connection.execute(
                 """
-                SELECT instrument, strategy, owned_quantity, average_price
+                SELECT instrument, strategy, owned_quantity, average_price,
+                       strategy_parameters, entry_order_id,
+                       entry_client_order_id
                 FROM live_position WHERE instrument = %s
                 """,
                 (instrument,),
@@ -843,6 +1241,9 @@ def run_cycle(
                 "strategy": managed_row[1],
                 "owned_quantity": managed_row[2],
                 "average_price": managed_row[3],
+                "strategy_parameters": managed_row[4],
+                "entry_order_id": managed_row[5],
+                "entry_client_order_id": managed_row[6],
             },
             client.account_balance(),
             client.positions(),

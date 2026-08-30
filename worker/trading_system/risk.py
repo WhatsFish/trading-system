@@ -30,7 +30,12 @@ def evaluate(
     reasons: list[str] = []
     is_entry = signal.action == "buy"
     proposed = (
-        max(Decimal("0"), equity * settings.max_position_pct)
+        max(
+            Decimal("0"),
+            equity
+            * settings.max_position_pct
+            * max(Decimal("0.5"), signal.confidence),
+        )
         if is_entry
         else Decimal("0")
     )

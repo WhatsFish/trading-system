@@ -148,7 +148,7 @@ The execution adapter supports OKX order submission, cancellation, lookup, and
 crash recovery by alphanumeric `clOrdId`. It enforces:
 
 - the explicit equity-perpetual allowlist
-- a hard 5 USDT order-notional ceiling
+- entry notional no greater than the current risk decision's authorization
 - valid exchange lot sizes
 - no short opening
 - live environment acknowledgement
@@ -176,3 +176,19 @@ continue. The controller polls once per minute and may enter only when the
 underlying reference, basis, corporate-event, account-exposure, daily-loss,
 and drawdown checks all pass. A 7x24 exchange venue does not override stale
 underlying-market checks.
+
+The experimental account sizing policy authorizes up to 35% of current equity
+for one 1x isolated position and caps total account nominal exposure at 150%
+of equity. New entries stop after a 10% daily equity loss or 20% peak-to-current
+drawdown. These are exploration limits, not return targets.
+
+Every filled entry creates a durable live experiment with its hypothesis,
+strategy version and parameters, reference price, basis, event context, fees,
+and attached stop. While open, the controller records mark-to-market
+observations and maximum favorable/adverse excursion. Every closed experiment
+gets a deterministic postmortem with net PnL, costs, exit reason, and lesson
+codes. After at least five closed experiments in the same symbol/strategy
+family, their average return and loss rate receive a bounded weight in future
+candidate scoring; smaller samples are recorded but cannot change rankings.
+External/manual quantity changes mark an experiment unreconciled and exclude
+it from learning rather than fabricating missing fills or fees.
