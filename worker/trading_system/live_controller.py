@@ -933,6 +933,7 @@ def load_candidate(connection, managed: dict | None) -> dict | None:
             SELECT e.symbol, e.family, e.parameters
             FROM strategy_candidate c
             JOIN strategy_experiment e ON e.id = c.experiment_id
+            WHERE e.current_target = 1
             ORDER BY c.score DESC LIMIT 1
             """
         ).fetchone()

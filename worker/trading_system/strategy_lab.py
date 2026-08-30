@@ -155,10 +155,10 @@ def main() -> None:
                     INSERT INTO strategy_experiment
                       (run_id, symbol, family, parameters, fold_returns,
                        return_pct, drawdown_pct, trades, positive_folds,
-                        score, live_experience_count, live_adjustment,
+                        current_target, score, live_experience_count, live_adjustment,
                         eligible, rejection_reason)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                             %s, %s, %s, %s)
+                             %s, %s, %s, %s, %s)
                     """,
                     (
                         run_id,
@@ -170,6 +170,7 @@ def main() -> None:
                         max_drawdown,
                         trades,
                         positive,
+                        desired[-1],
                         score,
                         experience_count,
                         live_adjustment,

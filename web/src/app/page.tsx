@@ -151,7 +151,7 @@ export default async function TradingDashboard() {
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="text-xs text-neutral-500">
-              <tr><th>Symbol</th><th>Family</th><th>Parameters</th><th>Score</th><th>Return</th><th>Drawdown</th><th>Folds</th><th>Live</th></tr>
+              <tr><th>Symbol</th><th>Family</th><th>Parameters</th><th>Target</th><th>Score</th><th>Return</th><th>Drawdown</th><th>Folds</th><th>Live</th></tr>
             </thead>
             <tbody>
               {candidates.map((candidate) => (
@@ -159,6 +159,9 @@ export default async function TradingDashboard() {
                   <td className="py-2 font-medium">{candidate.symbol}</td>
                   <td>{candidate.family}</td>
                   <td className="font-mono text-xs">{formatParameters(candidate.family, candidate.parameters)}</td>
+                  <td className={candidate.current_target === 1 ? "font-medium text-emerald-600" : "text-neutral-500"}>
+                    {candidate.current_target === 1 ? "HOLD LONG" : "FLAT"}
+                  </td>
                   <td>{Number(candidate.score).toFixed(2)}</td>
                   <td>{Number(candidate.return_pct).toFixed(2)}%</td>
                   <td>{Number(candidate.drawdown_pct).toFixed(2)}%</td>

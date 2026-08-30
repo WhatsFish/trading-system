@@ -183,6 +183,8 @@ CREATE TABLE IF NOT EXISTS strategy_experiment (
   drawdown_pct     NUMERIC     NOT NULL,
   trades           INTEGER     NOT NULL,
   positive_folds   INTEGER     NOT NULL,
+  current_target   INTEGER     NOT NULL DEFAULT 0
+                               CHECK (current_target IN (0, 1)),
   score            NUMERIC     NOT NULL,
   live_experience_count INTEGER NOT NULL DEFAULT 0,
   live_adjustment  NUMERIC     NOT NULL DEFAULT 0,
@@ -194,6 +196,8 @@ ALTER TABLE strategy_experiment
   ADD COLUMN IF NOT EXISTS live_experience_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE strategy_experiment
   ADD COLUMN IF NOT EXISTS live_adjustment NUMERIC NOT NULL DEFAULT 0;
+ALTER TABLE strategy_experiment
+  ADD COLUMN IF NOT EXISTS current_target INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS strategy_experiment_rank
   ON strategy_experiment (run_id, eligible, score DESC);
 

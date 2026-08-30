@@ -84,6 +84,7 @@ export type Candidate = {
   promoted_at: Date;
   live_experience_count: number;
   live_adjustment: string;
+  current_target: number;
 };
 
 export type ExecutionAudit = {
@@ -194,7 +195,7 @@ export async function dashboardData() {
       `SELECT c.symbol, c.family, c.score, c.promoted_at,
          e.parameters, e.return_pct, e.drawdown_pct,
          e.positive_folds, e.trades, e.live_experience_count,
-         e.live_adjustment
+         e.live_adjustment, e.current_target
        FROM strategy_candidate c
        JOIN strategy_experiment e ON e.id = c.experiment_id
        ORDER BY c.score DESC LIMIT 20`,
