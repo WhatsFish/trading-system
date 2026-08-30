@@ -128,3 +128,34 @@ target exposure below 50%. Simulated fills pay 5 bps fees and 10 bps adverse
 slippage on each side. A 5% shadow-account drawdown blocks new entries while
 exits remain available. Stale references, basis above 100 bps, SEC filings, and
 earnings windows also block entries.
+
+## Continuous strategy lab
+
+Every weekday research run evaluates 420 bounded parameter combinations across
+trend, breakout, and mean-reversion families. Each experiment is evaluated on
+three chronological out-of-sample folds with a conservative 15 bps transition
+cost. Candidates require at least two positive folds, six transitions,
+drawdown no greater than 15%, and a positive `return - 2 * drawdown` score.
+Failures and rejection reasons remain in the audit database.
+
+This is continuous evaluation, not unconstrained self-modifying code. The
+parameter space is versioned and bounded so results are reproducible and the
+search cannot silently weaken risk criteria.
+
+## Locked execution adapter
+
+The execution adapter supports OKX order submission, cancellation, lookup, and
+crash recovery by alphanumeric `clOrdId`. It enforces:
+
+- the explicit equity-perpetual allowlist
+- a hard 5 USDT order-notional ceiling
+- valid exchange lot sizes
+- no short opening
+- live environment acknowledgement
+- the independent database execution switch
+- a matching approved risk decision less than five minutes old
+
+The adapter is not scheduled and the database execution switch remains false.
+A real GOOGL minimum-size post-only order was placed at roughly half the bid,
+then canceled and reconciled without a fill. This validates transport only,
+not permission for autonomous execution.

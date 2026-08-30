@@ -65,3 +65,19 @@ the configured New York close window:
 ```
 
 It maintains a separate 30 USDT virtual ledger and cannot send real orders.
+
+The weekday research job also evaluates a bounded 420-combination strategy
+grid and updates the candidate leaderboard. Every rejected experiment remains
+auditable.
+
+The locked execution adapter is intentionally not scheduled. Its transport
+test requires a one-off acknowledgement and places a minimum-size post-only
+order far from market before immediately canceling it:
+
+```bash
+docker compose exec -T \
+  -e EXECUTION_TEST_ACK=PLACE_AND_CANCEL_REAL_ORDER \
+  worker python -m trading_system.executor
+```
+
+This does not enable autonomous trading; `execution_enabled` remains `false`.

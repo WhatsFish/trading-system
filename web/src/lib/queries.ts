@@ -103,6 +103,27 @@ export type ShadowTrade = {
   realized_pnl: string | null;
 };
 
+export type Candidate = {
+  symbol: string;
+  family: string;
+  score: string;
+  parameters: Record<string, number>;
+  return_pct: string;
+  drawdown_pct: string;
+  positive_folds: number;
+  trades: number;
+  promoted_at: Date;
+};
+
+export type ExecutionAudit = {
+  ts: Date;
+  instrument: string;
+  action: string;
+  requested_size: string;
+  requested_price: string | null;
+  state: string;
+};
+
 export async function dashboardData() {
   const instruments = (process.env.TRADING_INSTRUMENTS ?? "")
     .split(",")
@@ -123,6 +144,8 @@ export async function dashboardData() {
     shadowAccounts,
     shadowPositions,
     shadowTrades,
+    candidates,
+    executionAudits,
   ] = await Promise.all([
     account
       ? query<Position>(
@@ -199,6 +222,18 @@ export async function dashboardData() {
          execution_price, fee, realized_pnl
        FROM shadow_trade ORDER BY ts DESC LIMIT 20`,
     ),
+    query<Candidate>(
+      `SELECT c.symbol, c.family, c.score, c.promoted_at,
+         e.parameters, e.return_pct, e.drawdown_pct,
+         e.positive_folds, e.trades
+       FROM strategy_candidate c
+       JOIN strategy_experiment e ON e.id = c.experiment_id
+       ORDER BY c.score DESC LIMIT 20`,
+    ),
+    query<ExecutionAudit>(
+      `SELECT ts, instrument, action, requested_size, requested_price, state
+       FROM execution_audit ORDER BY ts DESC LIMIT 10`,
+    ),
   ]);
   return {
     account,
@@ -211,6 +246,8 @@ export async function dashboardData() {
     shadowAccount: shadowAccounts[0] ?? null,
     shadowPositions,
     shadowTrades,
+    candidates,
+    executionAudits,
     heartbeat: heartbeat[0] ?? null,
   };
 }

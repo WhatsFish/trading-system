@@ -20,6 +20,8 @@ export default async function TradingDashboard() {
     shadowAccount,
     shadowPositions,
     shadowTrades,
+    candidates,
+    executionAudits,
   } = await dashboardData();
   const stale = !heartbeat || Date.now() - new Date(heartbeat.last_seen_at).getTime() > 180_000;
 
@@ -162,6 +164,41 @@ export default async function TradingDashboard() {
             </tbody>
           </table>
           {!backtests.length && <Empty text="Waiting for long-history research." />}
+        </div>
+      </Section>
+
+      <Section title="Continuous strategy lab candidates">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="text-xs text-neutral-500">
+              <tr><th>Symbol</th><th>Family</th><th>Score</th><th>Return</th><th>Drawdown</th><th>Folds</th></tr>
+            </thead>
+            <tbody>
+              {candidates.map((candidate) => (
+                <tr key={`${candidate.symbol}-${candidate.family}`} className="border-t border-neutral-200 dark:border-neutral-800">
+                  <td className="py-2 font-medium">{candidate.symbol}</td>
+                  <td>{candidate.family}</td>
+                  <td>{Number(candidate.score).toFixed(2)}</td>
+                  <td>{Number(candidate.return_pct).toFixed(2)}%</td>
+                  <td>{Number(candidate.drawdown_pct).toFixed(2)}%</td>
+                  <td>{candidate.positive_folds}/3</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!candidates.length && <Empty text="Waiting for the first strategy-lab run." />}
+        </div>
+      </Section>
+
+      <Section title="Execution transport audit · automation locked">
+        <div className="divide-y divide-neutral-200 dark:divide-neutral-800">
+          {executionAudits.map((audit, index) => (
+            <div key={`${audit.ts}-${index}`} className="flex flex-wrap justify-between gap-2 py-2 text-sm">
+              <span><strong>{audit.instrument.replace("-USDT-SWAP", "")}</strong> · {audit.action} {audit.requested_size}</span>
+              <span className="text-neutral-500">{audit.state}</span>
+            </div>
+          ))}
+          {!executionAudits.length && <Empty text="No real transport test has been recorded." />}
         </div>
       </Section>
 

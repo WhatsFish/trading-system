@@ -75,8 +75,14 @@ class OkxClient:
             except (json.JSONDecodeError, UnicodeDecodeError):
                 raise OkxError(f"HTTP {error.code}: {error.reason}") from error
         if payload.get("code") != "0":
+            details = "; ".join(
+                f"{row.get('sCode')}: {row.get('sMsg')}"
+                for row in payload.get("data", [])
+                if row.get("sCode") or row.get("sMsg")
+            )
             raise OkxError(
                 f"{method} {path}: {payload.get('code')} {payload.get('msg')}"
+                + (f" ({details})" if details else "")
             )
         return payload.get("data", [])
 
@@ -136,3 +142,50 @@ class OkxClient:
 
     def positions(self) -> list[dict]:
         return self.request("GET", "/api/v5/account/positions", private=True)
+
+    def place_order(self, order: dict) -> dict:
+        rows = self.request(
+            "POST", "/api/v5/trade/order", body=order, private=True
+        )
+        if not rows or rows[0].get("sCode") != "0":
+            result = rows[0] if rows else {}
+            raise OkxError(
+                f"order rejected: {result.get('sCode')} {result.get('sMsg')}"
+            )
+        return rows[0]
+
+    def cancel_order(self, instrument: str, order_id: str) -> dict:
+        rows = self.request(
+            "POST",
+            "/api/v5/trade/cancel-order",
+            body={"instId": instrument, "ordId": order_id},
+            private=True,
+        )
+        if not rows or rows[0].get("sCode") != "0":
+            result = rows[0] if rows else {}
+            raise OkxError(
+                f"cancel rejected: {result.get('sCode')} {result.get('sMsg')}"
+            )
+        return rows[0]
+
+    def order(self, instrument: str, order_id: str) -> dict:
+        rows = self.request(
+            "GET",
+            "/api/v5/trade/order",
+            params={"instId": instrument, "ordId": order_id},
+            private=True,
+        )
+        if not rows:
+            raise OkxError("order query returned no data")
+        return rows[0]
+
+    def order_by_client_id(self, instrument: str, client_order_id: str) -> dict:
+        rows = self.request(
+            "GET",
+            "/api/v5/trade/order",
+            params={"instId": instrument, "clOrdId": client_order_id},
+            private=True,
+        )
+        if not rows:
+            raise OkxError("client order query returned no data")
+        return rows[0]

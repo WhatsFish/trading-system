@@ -172,6 +172,47 @@ CREATE TABLE IF NOT EXISTS backtest_result (
 CREATE INDEX IF NOT EXISTS backtest_result_recent
   ON backtest_result (symbol, strategy, generated_at DESC);
 
+CREATE TABLE IF NOT EXISTS strategy_experiment (
+  id               BIGSERIAL   PRIMARY KEY,
+  run_id           UUID        NOT NULL,
+  symbol           TEXT        NOT NULL,
+  family           TEXT        NOT NULL,
+  parameters       JSONB       NOT NULL,
+  fold_returns     JSONB       NOT NULL,
+  return_pct       NUMERIC     NOT NULL,
+  drawdown_pct     NUMERIC     NOT NULL,
+  trades           INTEGER     NOT NULL,
+  positive_folds   INTEGER     NOT NULL,
+  score            NUMERIC     NOT NULL,
+  eligible         BOOLEAN     NOT NULL,
+  rejection_reason TEXT,
+  generated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS strategy_experiment_rank
+  ON strategy_experiment (run_id, eligible, score DESC);
+
+CREATE TABLE IF NOT EXISTS strategy_candidate (
+  symbol         TEXT        NOT NULL,
+  family         TEXT        NOT NULL,
+  experiment_id  BIGINT      NOT NULL REFERENCES strategy_experiment(id),
+  score          NUMERIC     NOT NULL,
+  promoted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (symbol, family)
+);
+
+CREATE TABLE IF NOT EXISTS execution_audit (
+  id              BIGSERIAL   PRIMARY KEY,
+  client_order_id TEXT        NOT NULL UNIQUE,
+  ts              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  instrument      TEXT        NOT NULL,
+  action          TEXT        NOT NULL,
+  requested_size  NUMERIC     NOT NULL,
+  requested_price NUMERIC,
+  exchange_order_id TEXT,
+  state           TEXT        NOT NULL,
+  detail          JSONB       NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS shadow_account (
   id            SMALLINT    PRIMARY KEY CHECK (id = 1),
   initial_cash  NUMERIC     NOT NULL,
