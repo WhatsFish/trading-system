@@ -7,9 +7,6 @@ from .config import Settings
 from .database import Database
 from .news import fetch_news, save_news
 from .okx import OkxClient
-from .risk import evaluate
-from .strategy import equity_signal
-from .universe import BY_INSTRUMENT
 
 
 logging.basicConfig(
@@ -31,39 +28,12 @@ def run_cycle(settings: Settings, client: OkxClient, database: Database) -> None
     instruments = client.instruments()
     with database.connect() as connection:
         equity, exposure = database.save_account(connection, account, positions)
-        execution_enabled = database.execution_enabled(connection)
         for instrument in settings.instruments:
             candles = client.candles(instrument)
             ticker = tickers[instrument]
             details = instruments[instrument]
             database.save_candles(connection, instrument, candles)
             database.save_market(connection, instrument, ticker, details)
-            if instrument not in BY_INSTRUMENT:
-                raise ValueError(f"instrument is not in the equity allowlist: {instrument}")
-            signal_result = equity_signal(candles)
-            reference_stale, basis_bps, event_risk = database.latest_reference_risk(
-                connection, instrument
-            )
-            decision = evaluate(
-                settings=settings,
-                signal=signal_result,
-                equity=equity,
-                total_exposure=exposure,
-                instrument_rule_type=details.get("ruleType", ""),
-                instrument_state=details.get("state", ""),
-                execution_enabled=execution_enabled,
-                reference_stale=reference_stale,
-                basis_bps=basis_bps,
-                event_risk=event_risk,
-            )
-            database.save_signal_and_risk(
-                connection,
-                instrument,
-                signal_result,
-                decision,
-                settings.mode,
-                "us-equity-session-trend-v1",
-            )
             time.sleep(0.06)
         database.heartbeat(
             connection,

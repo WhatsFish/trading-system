@@ -20,19 +20,6 @@ export type Position = {
   margin_mode: string | null;
 };
 
-export type Decision = {
-  instrument: string;
-  ts: Date;
-  action: "buy" | "sell" | "hold";
-  confidence: string;
-  reference_price: string;
-  rationale: string;
-  approved: boolean;
-  mode: string;
-  proposed_notional: string;
-  reasons: string[];
-};
-
 export type News = {
   source: string;
   published_at: Date | null;
@@ -137,7 +124,6 @@ export async function dashboardData() {
   const account = accountRows[0] ?? null;
   const [
     positions,
-    decisions,
     news,
     heartbeat,
     basis,
@@ -154,15 +140,6 @@ export async function dashboardData() {
           [account.id],
         )
       : Promise.resolve([]),
-    query<Decision>(
-      `SELECT DISTINCT ON (s.instrument)
-         s.instrument, s.ts, s.action, s.confidence, s.reference_price,
-         s.rationale, r.approved, r.mode, r.proposed_notional, r.reasons
-       FROM strategy_signal s JOIN risk_decision r ON r.signal_id = s.id
-       WHERE s.instrument = ANY($1::text[])
-       ORDER BY s.instrument, s.ts DESC`,
-      [instruments],
-    ),
     query<News>(
       "SELECT source, published_at, title, url FROM news_item ORDER BY published_at DESC NULLS LAST LIMIT 12",
     ),
@@ -227,7 +204,6 @@ export async function dashboardData() {
   return {
     account,
     positions,
-    decisions,
     news,
     basis,
     events,

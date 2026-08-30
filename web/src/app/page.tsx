@@ -11,7 +11,6 @@ export default async function TradingDashboard() {
   const {
     account,
     positions,
-    decisions,
     news,
     heartbeat,
     basis,
@@ -71,29 +70,6 @@ export default async function TradingDashboard() {
             </table>
           </div>
         ) : <Empty text="No open positions." />}
-      </Section>
-
-      <Section
-        title="Market-session observations · not live order instructions"
-        description="These cards apply one common short-term session rule to all 14 symbols. They help monitor market state, but the live controller trades only the top candidate shown further below."
-      >
-        <div className="grid gap-3 md:grid-cols-3">
-          {decisions.map((d) => (
-            <article key={d.instrument} className="rounded-md border border-neutral-200 p-4 dark:border-neutral-800">
-              <div className="flex items-center justify-between">
-                <h3 className="font-medium">{d.instrument.replace("-USDT-SWAP", "")}</h3>
-                <span className="rounded bg-neutral-100 px-2 py-0.5 text-xs uppercase dark:bg-neutral-800">
-                  {d.action === "buy" ? "ENTRY SIGNAL" : d.action === "sell" ? "FLAT / EXIT" : "NO CHANGE"}
-                </span>
-              </div>
-              <p className="mt-2 text-sm text-neutral-600 dark:text-neutral-400">{d.rationale}</p>
-              <p className="mt-3 text-xs text-neutral-500">
-                confidence {Math.round(Number(d.confidence) * 100)}% · blocked: {d.reasons.join(", ") || "no"}
-              </p>
-            </article>
-          ))}
-          {!decisions.length && <Empty text="Waiting for the first collector cycle." />}
-        </div>
       </Section>
 
       <Section title="OKX vs underlying">
