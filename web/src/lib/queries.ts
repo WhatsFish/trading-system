@@ -18,6 +18,11 @@ export type Position = {
   unrealized_pnl: string | null;
   liquidation_price: string | null;
   margin_mode: string | null;
+  system_strategy: string | null;
+  strategy_parameters: Record<string, number> | null;
+  system_quantity: string | null;
+  stop_trigger_price: string | null;
+  system_average_price: string | null;
 };
 
 export type News = {
@@ -89,12 +94,19 @@ export type LiveState = {
   controller_seen_at: Date | null;
   managed_instrument: string | null;
   managed_count: number;
+  scan: Array<{
+    symbol: string;
+    family: string;
+    status: string;
+    reasons: string[];
+  }>;
 };
 
 export type LiveExperiment = {
   id: string;
   instrument: string;
   strategy: string;
+  strategy_parameters: Record<string, number>;
   hypothesis: string;
   entry_time: Date;
   entry_quantity: string;
@@ -130,13 +142,28 @@ export async function dashboardData() {
     events,
     backtests,
     candidates,
+    opportunities,
     executionAudits,
     liveStates,
     liveExperiments,
   ] = await Promise.all([
     account
       ? query<Position>(
-          "SELECT instrument, side, size, average_price, mark_price, leverage, notional_usd, unrealized_pnl, liquidation_price, margin_mode FROM position_snapshot WHERE account_snapshot_id = $1 ORDER BY instrument",
+          `SELECT p.instrument, p.side, p.size, p.average_price,
+             p.mark_price, p.leverage, p.notional_usd, p.unrealized_pnl,
+             p.liquidation_price, p.margin_mode,
+             l.strategy AS system_strategy,
+             l.strategy_parameters,
+             l.owned_quantity AS system_quantity,
+             stop.trigger_price AS stop_trigger_price,
+             l.average_price AS system_average_price
+           FROM position_snapshot p
+           LEFT JOIN live_position l
+             ON l.instrument = p.instrument AND p.side = 'long'
+           LEFT JOIN protective_order stop
+             ON stop.instrument = p.instrument AND stop.state = 'active'
+           WHERE p.account_snapshot_id = $1
+           ORDER BY p.instrument`,
           [account.id],
         )
       : Promise.resolve([]),
@@ -179,6 +206,29 @@ export async function dashboardData() {
        JOIN strategy_experiment e ON e.id = c.experiment_id
        ORDER BY c.score DESC LIMIT 100`,
     ),
+    query<Candidate>(
+      `SELECT symbol, family, score, promoted_at, parameters,
+         holdout_return_pct AS return_pct,
+         holdout_drawdown_pct AS drawdown_pct,
+         positive_folds, trades, live_experience_count,
+         live_adjustment, current_target
+       FROM (
+         SELECT DISTINCT ON (e.symbol)
+           e.symbol, e.family, c.score, c.promoted_at, e.parameters,
+           e.holdout_return_pct, e.holdout_drawdown_pct,
+           e.positive_folds, e.trades, e.live_experience_count,
+           e.live_adjustment, t.current_target
+         FROM strategy_candidate c
+         JOIN strategy_experiment e ON e.id = c.experiment_id
+         JOIN strategy_live_target t
+           ON t.symbol = e.symbol AND t.family = e.family
+          AND t.parameters = e.parameters
+          AND t.computed_at > NOW() - INTERVAL '4 days'
+         WHERE t.current_target = 1
+         ORDER BY e.symbol, c.score DESC
+       ) active
+       ORDER BY score DESC LIMIT 10`,
+    ),
     query<ExecutionAudit>(
       `SELECT ts, instrument, action, requested_size, requested_price, state
        FROM execution_audit ORDER BY ts DESC LIMIT 10`,
@@ -190,12 +240,13 @@ export async function dashboardData() {
          h.status AS controller_status,
          h.last_seen_at AS controller_seen_at,
          h.detail->>'managedInstrument' AS managed_instrument,
-         COALESCE((h.detail->>'managedCount')::int, 0) AS managed_count
+         COALESCE((h.detail->>'managedCount')::int, 0) AS managed_count,
+         COALESCE(h.detail->'scan', '[]'::jsonb) AS scan
        FROM (SELECT 1) seed
        LEFT JOIN worker_heartbeat h ON h.worker = 'live-controller'`,
     ),
     query<LiveExperiment>(
-      `SELECT id, instrument, strategy, hypothesis, entry_time,
+      `SELECT id, instrument, strategy, strategy_parameters, hypothesis, entry_time,
          entry_quantity, entry_price, status, exit_time, exit_reason,
          net_pnl, return_pct, max_favorable_pct, max_adverse_pct, postmortem
        FROM live_experiment ORDER BY entry_time DESC LIMIT 20`,
@@ -209,9 +260,40 @@ export async function dashboardData() {
     events,
     backtests,
     candidates,
+    opportunities,
     executionAudits,
     liveState: liveStates[0],
     liveExperiments,
     heartbeat: heartbeat[0] ?? null,
+    positionTrends: await getPositionTrends(positions),
   };
+}
+
+async function getPositionTrends(positions: Position[]) {
+  const pairs = await Promise.all(
+    positions.map(async (position) => {
+      try {
+        const response = await fetch(
+          `https://www.okx.com/api/v5/market/ticker?instId=${encodeURIComponent(position.instrument)}`,
+          { next: { revalidate: 30 } },
+        );
+        if (!response.ok) return [position.instrument, null] as const;
+        const payload = await response.json() as {
+          code: string;
+          data: Array<{ last: string; open24h: string }>;
+        };
+        const ticker = payload.data[0];
+        if (payload.code !== "0" || !ticker || Number(ticker.open24h) === 0) {
+          return [position.instrument, null] as const;
+        }
+        return [
+          position.instrument,
+          (Number(ticker.last) / Number(ticker.open24h) - 1) * 100,
+        ] as const;
+      } catch {
+        return [position.instrument, null] as const;
+      }
+    }),
+  );
+  return Object.fromEntries(pairs) as Record<string, number | null>;
 }

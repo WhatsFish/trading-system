@@ -230,7 +230,11 @@ def generate_targets_vectorized(
         last_day = next_month.notna() & (
             pd.Series(dates.month, index=frame.index) != next_month
         )
-        first_days = pd.Series(dates.day, index=frame.index) <= int(p["exitTradingDay"])
+        month_key = pd.Series(
+            list(zip(dates.year, dates.month)), index=frame.index
+        )
+        trading_day = month_key.groupby(month_key).cumcount() + 1
+        first_days = trading_day <= int(p["exitTradingDay"])
         return (last_day | first_days).astype(np.int8).to_numpy()
 
     if name == "macd-trend":

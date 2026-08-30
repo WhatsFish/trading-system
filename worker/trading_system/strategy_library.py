@@ -419,7 +419,15 @@ def generate_targets(
         elif name == "turn-of-month":
             date = dates[index]
             next_date = dates[index + 1] if index + 1 < len(dates) else date
-            first_days = date.day <= int(p["exitTradingDay"])
+            first_index = index
+            while (
+                first_index > 0
+                and dates[first_index - 1].year == date.year
+                and dates[first_index - 1].month == date.month
+            ):
+                first_index -= 1
+            trading_day = index - first_index + 1
+            first_days = trading_day <= int(p["exitTradingDay"])
             last_day = next_date.month != date.month
             position = 1 if last_day or first_days else 0
         elif name == "macd-trend":
