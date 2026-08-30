@@ -189,3 +189,93 @@ class OkxClient:
         if not rows:
             raise OkxError("client order query returned no data")
         return rows[0]
+
+    def set_leverage(
+        self, instrument: str, leverage: str = "1", position_side: str = "long"
+    ) -> dict:
+        rows = self.request(
+            "POST",
+            "/api/v5/account/set-leverage",
+            body={
+                "instId": instrument,
+                "lever": leverage,
+                "mgnMode": "isolated",
+                "posSide": position_side,
+            },
+            private=True,
+        )
+        if not rows:
+            raise OkxError("set leverage returned no data")
+        return rows[0]
+
+    def place_stop(
+        self,
+        instrument: str,
+        size: str,
+        trigger_price: str,
+        client_order_id: str,
+    ) -> dict:
+        rows = self.request(
+            "POST",
+            "/api/v5/trade/order-algo",
+            body={
+                "instId": instrument,
+                "tdMode": "isolated",
+                "side": "sell",
+                "posSide": "long",
+                "ordType": "conditional",
+                "sz": size,
+                "slTriggerPx": trigger_price,
+                "slOrdPx": "-1",
+                "algoClOrdId": client_order_id,
+                "reduceOnly": True,
+            },
+            private=True,
+        )
+        if not rows or rows[0].get("sCode") != "0":
+            result = rows[0] if rows else {}
+            raise OkxError(
+                f"stop rejected: {result.get('sCode')} {result.get('sMsg')}"
+            )
+        return rows[0]
+
+    def algo_order(self, algo_id: str) -> dict:
+        rows = self.request(
+            "GET",
+            "/api/v5/trade/order-algo",
+            params={"algoId": algo_id},
+            private=True,
+        )
+        if not rows:
+            raise OkxError("algo order query returned no data")
+        return rows[0]
+
+    def algo_order_by_client_id(
+        self, instrument: str, client_order_id: str
+    ) -> dict:
+        rows = self.request(
+            "GET",
+            "/api/v5/trade/order-algo",
+            params={
+                "instId": instrument,
+                "algoClOrdId": client_order_id,
+            },
+            private=True,
+        )
+        if not rows:
+            raise OkxError("algo client order query returned no data")
+        return rows[0]
+
+    def cancel_algo(self, instrument: str, algo_id: str) -> dict:
+        rows = self.request(
+            "POST",
+            "/api/v5/trade/cancel-algos",
+            body=[{"instId": instrument, "algoId": algo_id}],
+            private=True,
+        )
+        if not rows or rows[0].get("sCode") != "0":
+            result = rows[0] if rows else {}
+            raise OkxError(
+                f"algo cancel rejected: {result.get('sCode')} {result.get('sMsg')}"
+            )
+        return rows[0]

@@ -112,7 +112,7 @@ class RiskTests(unittest.TestCase):
             Decimal("20"),
             "normal",
             "live",
-            True,
+            False,
             daily_pnl=Decimal("-10"),
             peak_equity=Decimal("30"),
             reference_stale=True,

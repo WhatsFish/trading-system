@@ -70,9 +70,8 @@ The weekday research job also evaluates a bounded 420-combination strategy
 grid and updates the candidate leaderboard. Every rejected experiment remains
 auditable.
 
-The locked execution adapter is intentionally not scheduled. Its transport
-test requires a one-off acknowledgement and places a minimum-size post-only
-order far from market before immediately canceling it:
+The execution transport test requires a one-off acknowledgement and places a
+minimum-size post-only order far from market before immediately canceling it:
 
 ```bash
 docker compose exec -T \
@@ -80,4 +79,13 @@ docker compose exec -T \
   worker python -m trading_system.executor
 ```
 
-This does not enable autonomous trading; `execution_enabled` remains `false`.
+Bounded live automation runs as the separate `live` service. Its database gate
+can be changed without rebuilding or stopping account observation:
+
+```bash
+./scripts/live-off.sh  # immediately blocks new entries; managed exits continue
+./scripts/live-on.sh
+```
+
+The active policy allows at most one system-managed long with a 5 USDT entry
+cap, 1x isolated leverage, an atomic attached 5% stop, and no short opening.

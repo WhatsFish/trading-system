@@ -12,6 +12,20 @@ services:
       TRADING_MODE: observe
       LIVE_TRADING_ACK: ""
 
+  live:
+    build: ./worker
+    image: trading-system-worker
+    restart: unless-stopped
+    command: ["python", "-m", "trading_system.live_controller"]
+    env_file:
+      - .env
+      - /home/liharr/.config/trading-system.env
+    environment:
+      PG_HOST: db
+      PG_PORT: "5432"
+      TRADING_MODE: live
+      LIVE_TRADING_ACK: I_UNDERSTAND_LIVE_TRADING_RISK
+
   research:
     build:
       context: .

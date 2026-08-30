@@ -213,6 +213,40 @@ CREATE TABLE IF NOT EXISTS execution_audit (
   detail          JSONB       NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS protective_order (
+  instrument       TEXT        PRIMARY KEY,
+  exchange_algo_id TEXT        NOT NULL,
+  trigger_price    NUMERIC     NOT NULL,
+  size             NUMERIC     NOT NULL,
+  reconciled_size  NUMERIC     NOT NULL DEFAULT 0,
+  state            TEXT        NOT NULL,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+ALTER TABLE protective_order
+  ADD COLUMN IF NOT EXISTS reconciled_size NUMERIC NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS live_position (
+  instrument       TEXT        PRIMARY KEY,
+  strategy         TEXT        NOT NULL,
+  entry_order_id   TEXT        NOT NULL,
+  entry_client_order_id TEXT    NOT NULL,
+  owned_quantity   NUMERIC     NOT NULL CHECK (owned_quantity > 0),
+  average_price    NUMERIC     NOT NULL,
+  exit_client_order_id TEXT,
+  exit_state       TEXT,
+  opened_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+ALTER TABLE live_position ADD COLUMN IF NOT EXISTS entry_client_order_id TEXT;
+ALTER TABLE live_position ADD COLUMN IF NOT EXISTS owned_quantity NUMERIC;
+ALTER TABLE live_position ADD COLUMN IF NOT EXISTS average_price NUMERIC;
+ALTER TABLE live_position ADD COLUMN IF NOT EXISTS exit_client_order_id TEXT;
+ALTER TABLE live_position ADD COLUMN IF NOT EXISTS exit_state TEXT;
+ALTER TABLE live_position ALTER COLUMN entry_client_order_id SET NOT NULL;
+ALTER TABLE live_position ALTER COLUMN owned_quantity SET NOT NULL;
+ALTER TABLE live_position ALTER COLUMN average_price SET NOT NULL;
+
 CREATE TABLE IF NOT EXISTS shadow_account (
   id            SMALLINT    PRIMARY KEY CHECK (id = 1),
   initial_cash  NUMERIC     NOT NULL,

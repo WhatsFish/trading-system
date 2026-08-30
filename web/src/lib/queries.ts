@@ -124,6 +124,13 @@ export type ExecutionAudit = {
   state: string;
 };
 
+export type LiveState = {
+  execution_enabled: boolean;
+  controller_status: string | null;
+  controller_seen_at: Date | null;
+  managed_instrument: string | null;
+};
+
 export async function dashboardData() {
   const instruments = (process.env.TRADING_INSTRUMENTS ?? "")
     .split(",")
@@ -146,6 +153,7 @@ export async function dashboardData() {
     shadowTrades,
     candidates,
     executionAudits,
+    liveStates,
   ] = await Promise.all([
     account
       ? query<Position>(
@@ -234,6 +242,16 @@ export async function dashboardData() {
       `SELECT ts, instrument, action, requested_size, requested_price, state
        FROM execution_audit ORDER BY ts DESC LIMIT 10`,
     ),
+    query<LiveState>(
+      `SELECT
+         COALESCE((SELECT value = 'true' FROM system_setting
+                   WHERE key = 'execution_enabled'), false) AS execution_enabled,
+         h.status AS controller_status,
+         h.last_seen_at AS controller_seen_at,
+         h.detail->>'managedInstrument' AS managed_instrument
+       FROM (SELECT 1) seed
+       LEFT JOIN worker_heartbeat h ON h.worker = 'live-controller'`,
+    ),
   ]);
   return {
     account,
@@ -248,6 +266,7 @@ export async function dashboardData() {
     shadowTrades,
     candidates,
     executionAudits,
+    liveState: liveStates[0],
     heartbeat: heartbeat[0] ?? null,
   };
 }

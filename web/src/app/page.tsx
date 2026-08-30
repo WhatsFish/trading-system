@@ -22,6 +22,7 @@ export default async function TradingDashboard() {
     shadowTrades,
     candidates,
     executionAudits,
+    liveState,
   } = await dashboardData();
   const stale = !heartbeat || Date.now() - new Date(heartbeat.last_seen_at).getTime() > 180_000;
 
@@ -31,13 +32,18 @@ export default async function TradingDashboard() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Trading System</h1>
           <p className="mt-1 text-sm text-neutral-500">
-            24/7 market observation · deterministic risk · execution locked
+            24/7 market observation · deterministic risk · execution{" "}
+            {liveState?.execution_enabled ? "live" : "locked"}
           </p>
         </div>
         <div className={`rounded-full px-3 py-1 text-xs font-medium ${
           stale ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"
         }`}>
-          {stale ? "worker stale" : `${heartbeat?.status ?? "unknown"} · observe`}
+          {stale
+            ? "worker stale"
+            : liveState?.execution_enabled
+              ? `live · max 5 USDT${liveState.managed_instrument ? ` · ${liveState.managed_instrument.replace("-USDT-SWAP", "")}` : ""}`
+              : `${heartbeat?.status ?? "unknown"} · observe`}
         </div>
       </header>
 

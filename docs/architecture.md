@@ -155,7 +155,24 @@ crash recovery by alphanumeric `clOrdId`. It enforces:
 - the independent database execution switch
 - a matching approved risk decision less than five minutes old
 
-The adapter is not scheduled and the database execution switch remains false.
-A real GOOGL minimum-size post-only order was placed at roughly half the bid,
-then canceled and reconciled without a fill. This validates transport only,
-not permission for autonomous execution.
+The adapter's transport was verified using real GOOGL minimum-size post-only
+orders at roughly half the bid; each was canceled and reconciled without a
+fill.
+
+Live activation uses a separate controller service. It may manage at most one
+position and tracks its exact filled quantity separately from the aggregate
+OKX position. Entries are IOC limit orders capped by their maximum fill price
+and include an attached 5% mark-price stop in the same exchange request.
+Strategy exits retain that stop until the reduce-only exit is confirmed.
+
+Manual trading in the same instrument while it is system-managed is prohibited.
+If aggregate quantity exceeds the system-owned quantity, the controller
+automatically disables new entries and does not submit a strategy exit. Manual
+positions in other instruments are never selected or modified.
+
+The bounded controller is active. The database gate blocks new entries
+immediately when disabled, while risk-reducing exits and stop reconciliation
+continue. The controller polls once per minute and may enter only when the
+underlying reference, basis, corporate-event, account-exposure, daily-loss,
+and drawdown checks all pass. A 7x24 exchange venue does not override stale
+underlying-market checks.

@@ -22,6 +22,9 @@ class ExecutorTests(unittest.TestCase):
             "reduce_only": False,
             "client_order_id": "test1",
             "risk_decision_id": 1,
+            "order_type": "limit",
+            "stop_trigger_price": Decimal("190"),
+            "stop_client_order_id": "stoptest1",
         }
         values.update(changes)
         return OrderIntent(**values)
@@ -61,6 +64,51 @@ class ExecutorTests(unittest.TestCase):
         validate_intent(
             self.intent(), self.settings("live"), True,
             Decimal("200"), Decimal("0.01"), Decimal("0.01"),
+        )
+
+    def test_ioc_price_ceiling_enforces_entry_cap(self) -> None:
+        validate_intent(
+            self.intent(price=Decimal("201"), order_type="ioc"),
+            self.settings("live"),
+            True,
+            Decimal("200"),
+            Decimal("0.01"),
+            Decimal("0.01"),
+        )
+
+    def test_reduce_only_exit_can_close_appreciated_position(self) -> None:
+        validate_intent(
+            self.intent(
+                action="sell",
+                size=Decimal("0.10"),
+                price=None,
+                reduce_only=True,
+                order_type="market",
+                stop_trigger_price=None,
+                stop_client_order_id=None,
+            ),
+            self.settings("live"),
+            True,
+            Decimal("300"),
+            Decimal("0.01"),
+            Decimal("0.01"),
+        )
+
+    def test_kill_switch_never_blocks_reduce_only_exit(self) -> None:
+        validate_intent(
+            self.intent(
+                action="sell",
+                price=None,
+                reduce_only=True,
+                order_type="market",
+                stop_trigger_price=None,
+                stop_client_order_id=None,
+            ),
+            self.settings("live"),
+            False,
+            Decimal("200"),
+            Decimal("0.01"),
+            Decimal("0.01"),
         )
 
 

@@ -41,7 +41,7 @@ def evaluate(
         reasons.append("mode_is_observe")
     if settings.live_ack != "I_UNDERSTAND_LIVE_TRADING_RISK":
         reasons.append("live_ack_missing")
-    if not execution_enabled:
+    if is_entry and not execution_enabled:
         reasons.append("database_execution_gate_disabled")
     if signal.action == "hold":
         reasons.append("signal_is_hold")

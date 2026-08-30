@@ -236,7 +236,7 @@ class Database:
         decision,
         mode: str,
         strategy: str,
-    ) -> None:
+    ) -> int:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -262,6 +262,7 @@ class Database:
                 INSERT INTO risk_decision
                   (signal_id, approved, mode, proposed_notional, reasons, limits)
                 VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id
                 """,
                 (
                     signal_id,
@@ -272,18 +273,23 @@ class Database:
                     Jsonb(decision.limits),
                 ),
             )
+            return cursor.fetchone()[0]
 
     def heartbeat(
-        self, connection: psycopg.Connection, status: str, detail: dict
+        self,
+        connection: psycopg.Connection,
+        status: str,
+        detail: dict,
+        worker: str = "collector",
     ) -> None:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
                 INSERT INTO worker_heartbeat (worker, last_seen_at, status, detail)
-                VALUES ('collector', NOW(), %s, %s)
+                VALUES (%s, NOW(), %s, %s)
                 ON CONFLICT (worker) DO UPDATE SET
                   last_seen_at = NOW(), status = EXCLUDED.status,
                   detail = EXCLUDED.detail
                 """,
-                (status, Jsonb(detail)),
+                (worker, status, Jsonb(detail)),
             )
