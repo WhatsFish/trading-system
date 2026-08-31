@@ -102,6 +102,10 @@ export type LiveState = {
   }>;
 };
 
+export type MarketSession = {
+  latest_reference: Date | null;
+};
+
 export type LiveExperiment = {
   id: string;
   instrument: string;
@@ -146,6 +150,7 @@ export async function dashboardData() {
     executionAudits,
     liveStates,
     liveExperiments,
+    marketSessions,
   ] = await Promise.all([
     account
       ? query<Position>(
@@ -251,6 +256,9 @@ export async function dashboardData() {
          net_pnl, return_pct, max_favorable_pct, max_adverse_pct, postmortem
        FROM live_experiment ORDER BY entry_time DESC LIMIT 20`,
     ),
+    query<MarketSession>(
+      "SELECT MAX(underlying_quoted_at) AS latest_reference FROM basis_snapshot",
+    ),
   ]);
   return {
     account,
@@ -266,6 +274,7 @@ export async function dashboardData() {
     liveExperiments,
     heartbeat: heartbeat[0] ?? null,
     positionTrends: await getPositionTrends(positions),
+    latestReference: marketSessions[0]?.latest_reference ?? null,
   };
 }
 

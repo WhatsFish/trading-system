@@ -158,6 +158,11 @@ export const ui = {
     research: "研究与诊断",
     candidates: "全部优质策略候选",
     diagnostics: "基差、回测、事件、执行记录和新闻",
+    premarket: "盘前",
+    regular: "常规交易",
+    afterHours: "盘后",
+    closed: "休市",
+    reference: "参考价",
   },
   en: {
     title: "Trading System",
@@ -187,5 +192,10 @@ export const ui = {
     research: "Research and diagnostics",
     candidates: "All quality strategy candidates",
     diagnostics: "Basis, backtests, events, execution audit, and news",
+    premarket: "Premarket",
+    regular: "Regular session",
+    afterHours: "After hours",
+    closed: "Market closed",
+    reference: "reference",
   },
 } as const;

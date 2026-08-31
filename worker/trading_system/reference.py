@@ -19,7 +19,7 @@ def latest_quotes() -> dict[str, tuple[dt.datetime, Decimal]]:
         group_by="ticker",
         threads=True,
         progress=False,
-        prepost=False,
+        prepost=True,
     )
     quotes: dict[str, tuple[dt.datetime, Decimal]] = {}
     for symbol in SYMBOLS:

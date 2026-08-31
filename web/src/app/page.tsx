@@ -31,6 +31,7 @@ export default async function TradingDashboard({
     liveState,
     liveExperiments,
     news,
+    latestReference,
   } = data;
   const stale =
     !heartbeat ||
@@ -56,6 +57,7 @@ export default async function TradingDashboard({
     const scan = scanByKey.get(`${candidate.symbol}:${candidate.family}`);
     return scan && scan.status !== "flat" && !heldSymbols.has(candidate.symbol);
   });
+  const session = marketSession(new Date());
 
   return (
     <main className="mx-auto max-w-5xl px-5 py-10">
@@ -63,6 +65,24 @@ export default async function TradingDashboard({
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{t.title}</h1>
           <p className="mt-1 text-sm text-neutral-500">{t.subtitle}</p>
+          <p className="mt-2 text-xs text-neutral-500">
+            {session === "premarket"
+              ? t.premarket
+              : session === "regular"
+                ? t.regular
+                : session === "afterHours"
+                  ? t.afterHours
+                  : t.closed}
+            {" · "}
+            {t.reference}{" "}
+            {latestReference
+              ? new Date(latestReference).toLocaleString(
+                  lang === "zh" ? "zh-CN" : "en-US",
+                  { timeZone: "America/New_York" },
+                )
+              : "—"}
+            {" ET"}
+          </p>
         </div>
         <div className="flex items-center gap-3">
           <div
@@ -482,6 +502,23 @@ function reasonText(reason: string, lang: Lang) {
     max_drawdown_circuit_breaker: { zh: "触发最大回撤熔断", en: "maximum drawdown circuit breaker" },
   };
   return reasons[reason]?.[lang] ?? reason;
+}
+
+function marketSession(now: Date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(now);
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  if (value.weekday === "Sat" || value.weekday === "Sun") return "closed";
+  const minutes = Number(value.hour) * 60 + Number(value.minute);
+  if (minutes >= 4 * 60 && minutes < 9 * 60 + 30) return "premarket";
+  if (minutes >= 9 * 60 + 30 && minutes < 16 * 60) return "regular";
+  if (minutes >= 16 * 60 && minutes < 20 * 60) return "afterHours";
+  return "closed";
 }
 
 function scanStatusText(
