@@ -89,10 +89,15 @@ CREATE TABLE IF NOT EXISTS position_snapshot (
   leverage            NUMERIC,
   notional_usd        NUMERIC,
   unrealized_pnl      NUMERIC,
+  unrealized_pnl_ratio NUMERIC,
+  margin              NUMERIC,
   liquidation_price   NUMERIC,
   margin_mode         TEXT,
   PRIMARY KEY (account_snapshot_id, instrument, side)
 );
+ALTER TABLE position_snapshot
+  ADD COLUMN IF NOT EXISTS unrealized_pnl_ratio NUMERIC;
+ALTER TABLE position_snapshot ADD COLUMN IF NOT EXISTS margin NUMERIC;
 
 CREATE TABLE IF NOT EXISTS strategy_signal (
   id             BIGSERIAL   PRIMARY KEY,

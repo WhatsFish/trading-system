@@ -295,3 +295,31 @@ class OkxClient:
                 f"algo cancel rejected: {result.get('sCode')} {result.get('sMsg')}"
             )
         return rows[0]
+
+    def amend_algo_stop(
+        self,
+        instrument: str,
+        algo_id: str,
+        trigger_price: str,
+        request_id: str,
+    ) -> dict:
+        rows = self.request(
+            "POST",
+            "/api/v5/trade/amend-algos",
+            body={
+                "instId": instrument,
+                "algoId": algo_id,
+                "reqId": request_id,
+                "newSlTriggerPx": trigger_price,
+                "newSlOrdPx": "-1",
+                "newSlTriggerPxType": "mark",
+                "cxlOnFail": False,
+            },
+            private=True,
+        )
+        if not rows or rows[0].get("sCode") != "0":
+            result = rows[0] if rows else {}
+            raise OkxError(
+                f"algo amend rejected: {result.get('sCode')} {result.get('sMsg')}"
+            )
+        return rows[0]

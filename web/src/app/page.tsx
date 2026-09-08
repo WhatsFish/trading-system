@@ -175,7 +175,7 @@ export default async function TradingDashboard({
                         {position.leverage}× {position.margin_mode}
                       </p>
                     </div>
-                    <Trend value={trend} />
+                    <Trend value={trend} label={t.trend24h} />
                   </div>
                   <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
                     <Small
@@ -196,6 +196,19 @@ export default async function TradingDashboard({
                           : `${number(String(systemPnl), 4)} ${lang === "zh" ? "系统" : "system"}`
                       }
                     />
+                    <Small
+                      label={t.positionRoi}
+                      value={
+                        position.unrealized_pnl_ratio == null
+                          ? "—"
+                          : `${(Number(position.unrealized_pnl_ratio) * 100).toFixed(2)}%`
+                      }
+                      tone={
+                        Number(position.unrealized_pnl_ratio ?? 0) >= 0
+                          ? "positive"
+                          : "negative"
+                      }
+                    />
                     <Small label={lang === "zh" ? "名义价值" : "Notional"} value={`${number(position.notional_usd)} USD`} />
                     <Small label={lang === "zh" ? "强平价" : "Liquidation"} value={number(position.liquidation_price)} />
                   </div>
@@ -212,7 +225,17 @@ export default async function TradingDashboard({
                       <p>
                         <span className="text-neutral-500">{t.stop}：</span>
                         {position.stop_trigger_price
-                          ? `${number(position.stop_trigger_price)} (${lang === "zh" ? `覆盖系统数量 ${systemSize}` : `covers system quantity ${systemSize}`})`
+                          ? `${number(position.stop_trigger_price)} · ${
+                              Number(position.stop_trigger_price) >
+                              Number(position.system_average_price)
+                                ? `${t.profitStop} (${(
+                                    (Number(position.stop_trigger_price) /
+                                      Number(position.system_average_price) -
+                                      1) *
+                                    100
+                                  ).toFixed(2)}%)`
+                                : t.initialStop
+                            } (${lang === "zh" ? `覆盖系统数量 ${systemSize}` : `covers system quantity ${systemSize}`})`
                           : lang === "zh"
                             ? "等待系统保护单"
                             : "Awaiting system protection"}
@@ -427,23 +450,40 @@ function Section({
   );
 }
 
-function Trend({ value }: { value: number | null | undefined }) {
+function Trend({
+  value,
+  label,
+}: {
+  value: number | null | undefined;
+  label: string;
+}) {
   if (value == null) {
-    return <span className="text-xs text-neutral-500">24h —</span>;
+    return <span className="text-xs text-neutral-500">{label} —</span>;
   }
   const positive = value >= 0;
   return (
-    <span className={`rounded px-2 py-1 text-sm font-medium ${positive ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
-      {positive ? "▲" : "▼"} {Math.abs(value).toFixed(2)}%
-    </span>
+    <div className="text-right">
+      <p className="text-xs text-neutral-500">{label}</p>
+      <span className={`mt-1 inline-block rounded px-2 py-1 text-sm font-medium ${positive ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
+        {positive ? "▲" : "▼"} {Math.abs(value).toFixed(2)}%
+      </span>
+    </div>
   );
 }
 
-function Small({ label, value }: { label: string; value: string }) {
+function Small({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: "positive" | "negative";
+}) {
   return (
     <div>
       <p className="text-xs text-neutral-500">{label}</p>
-      <p className="mt-0.5 font-medium">{value}</p>
+      <p className={`mt-0.5 font-medium ${tone === "positive" ? "text-emerald-600" : tone === "negative" ? "text-red-600" : ""}`}>{value}</p>
     </div>
   );
 }

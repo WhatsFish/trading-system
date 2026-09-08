@@ -6,6 +6,7 @@ from decimal import Decimal
 from trading_system.live_controller import (
     desired_action,
     portfolio_candidate_allowed,
+    profit_protection_price,
     replacement_allowed,
 )
 
@@ -56,6 +57,27 @@ class LiveControllerTests(unittest.TestCase):
         )
         self.assertFalse(
             replacement_allowed(Decimal("40"), Decimal("20"), recent, now)
+        )
+
+    def test_profit_protection_is_inactive_below_five_percent(self) -> None:
+        self.assertIsNone(
+            profit_protection_price(
+                Decimal("100"), Decimal("4.99"), Decimal("0.01")
+            )
+        )
+
+    def test_profit_protection_moves_to_breakeven_then_trails(self) -> None:
+        self.assertEqual(
+            profit_protection_price(
+                Decimal("100"), Decimal("5"), Decimal("0.01")
+            ),
+            Decimal("100.30"),
+        )
+        self.assertEqual(
+            profit_protection_price(
+                Decimal("100"), Decimal("10.44"), Decimal("0.01")
+            ),
+            Decimal("106.44"),
         )
 
 

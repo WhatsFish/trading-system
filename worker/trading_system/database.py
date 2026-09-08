@@ -106,8 +106,10 @@ class Database:
                     INSERT INTO position_snapshot
                       (account_snapshot_id, instrument, side, size, average_price,
                        mark_price, leverage, notional_usd, unrealized_pnl,
-                       liquidation_price, margin_mode)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       unrealized_pnl_ratio, margin, liquidation_price,
+                       margin_mode)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s)
                     """,
                     (
                         snapshot_id,
@@ -119,6 +121,8 @@ class Database:
                         decimal_or_none(row.get("lever")),
                         decimal_or_none(row.get("notionalUsd")),
                         decimal_or_none(row.get("upl")),
+                        decimal_or_none(row.get("uplRatio")),
+                        decimal_or_none(row.get("margin")),
                         decimal_or_none(row.get("liqPx")),
                         row.get("mgnMode"),
                     ),

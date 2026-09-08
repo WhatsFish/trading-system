@@ -197,3 +197,19 @@ family, their average return and loss rate receive a bounded weight in future
 candidate scoring; smaller samples are recorded but cannot change rankings.
 External/manual quantity changes mark an experiment unreconciled and exclude
 it from learning rather than fabricating missing fills or fees.
+
+## Profit protection
+
+Every entry starts with an exchange-side stop about 5% below entry. Strategy
+invalidation and score-based replacement remain the primary exits. In
+addition, protection only ratchets upward:
+
+- below 5% maximum favorable excursion, retain the initial stop;
+- after reaching 5%, move the stop to about 0.3% above entry;
+- after reaching 8%, trail four percentage points behind the best recorded
+  return.
+
+The stop is amended in place at OKX, never moved downward. If price has already
+crossed the newly required protection level, the controller closes its exact
+owned quantity immediately. This is profit protection rather than a fixed
+take-profit ceiling, so strong trends can continue running.

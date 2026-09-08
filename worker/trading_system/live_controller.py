@@ -92,6 +92,24 @@ def replacement_allowed(
     )
 
 
+def profit_protection_price(
+    entry_price: Decimal,
+    max_favorable_pct: Decimal,
+    tick_size: Decimal,
+) -> Decimal | None:
+    if max_favorable_pct < Decimal("5"):
+        return None
+    locked_pct = (
+        Decimal("0.30")
+        if max_favorable_pct < Decimal("8")
+        else max_favorable_pct - Decimal("4")
+    )
+    return floor_step(
+        entry_price * (Decimal("1") + locked_pct / Decimal("100")),
+        tick_size,
+    )
+
+
 def candidate_target(
     connection,
     symbol: str,
@@ -521,6 +539,7 @@ def finalize_experiment(
     instrument: str,
     exit_order: dict,
     reason: str,
+    experiment_id: int | None = None,
 ) -> None:
     from psycopg.types.json import Jsonb
 
@@ -530,11 +549,13 @@ def finalize_experiment(
             SELECT id, entry_quantity, entry_price, entry_fee,
                    max_favorable_pct, max_adverse_pct
             FROM live_experiment
-            WHERE instrument = %s AND status = 'open'
+            WHERE instrument = %s
+              AND status IN ('open', 'closed_unreconciled')
+              AND (%s IS NULL OR id = %s)
             ORDER BY entry_time DESC LIMIT 1
             FOR UPDATE
             """,
-            (instrument,),
+            (instrument, experiment_id, experiment_id),
         ).fetchone()
         if not row:
             return
@@ -701,6 +722,46 @@ def mark_experiment_unreconciled(
             ),
         )
         connection.commit()
+
+
+def reconcile_missing_position(
+    client: OkxClient,
+    database: Database,
+    managed: dict,
+    fallback_reason: str,
+) -> bool:
+    instrument = managed["instrument"]
+    owned = Decimal(managed["owned_quantity"])
+    with database.connect() as connection:
+        exits = connection.execute(
+            """
+            SELECT client_order_id, exchange_order_id
+            FROM execution_audit
+            WHERE instrument = %s AND action = 'sell'
+              AND ts >= %s
+            ORDER BY ts DESC
+            """,
+            (instrument, managed["opened_at"]),
+        ).fetchall()
+    for client_id, order_id in exits:
+        try:
+            order = (
+                client.order(instrument, order_id)
+                if order_id
+                else client.order_by_client_id(instrument, client_id)
+            )
+        except OkxError:
+            continue
+        if Decimal(order.get("accFillSz") or "0") >= owned:
+            finalize_experiment(
+                database,
+                instrument,
+                order,
+                "strategy exit recovered",
+            )
+            return True
+    mark_experiment_unreconciled(database, instrument, fallback_reason)
+    return False
 
 
 def ensure_managed_experiment(database: Database, managed: dict) -> None:
@@ -884,11 +945,28 @@ def cancel_protection(
         row = connection.execute(
             """
             SELECT exchange_algo_id FROM protective_order
-            WHERE instrument = %s AND state = 'active'
+            WHERE instrument = %s AND state IN ('active', 'canceling')
             """,
             (instrument,),
         ).fetchone()
         if not row:
+            return
+        exchange = client.algo_order(row[0])
+        exchange_state = exchange.get("state", "unknown")
+        if exchange_state not in {"live", "canceled"}:
+            raise RuntimeError(
+                f"cannot safely cancel protection in state {exchange_state}"
+            )
+        if exchange_state == "canceled":
+            connection.execute(
+                """
+                UPDATE protective_order
+                SET state = 'canceled', updated_at = NOW()
+                WHERE instrument = %s
+                """,
+                (instrument,),
+            )
+            connection.commit()
             return
         connection.execute(
             """
@@ -898,7 +976,19 @@ def cancel_protection(
             (instrument,),
         )
         connection.commit()
-    client.cancel_algo(instrument, row[0])
+    try:
+        client.cancel_algo(instrument, row[0])
+    except Exception:
+        with database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE protective_order SET state = 'active', updated_at = NOW()
+                WHERE instrument = %s
+                """,
+                (instrument,),
+            )
+            connection.commit()
+        raise
     with database.connect() as connection:
         connection.execute(
             """
@@ -908,6 +998,54 @@ def cancel_protection(
             (instrument,),
         )
         connection.commit()
+
+
+def raise_profit_protection(
+    client: OkxClient,
+    database: Database,
+    instrument: str,
+    desired_trigger: Decimal,
+) -> bool:
+    with database.connect() as connection:
+        row = connection.execute(
+            """
+            SELECT exchange_algo_id, trigger_price
+            FROM protective_order
+            WHERE instrument = %s AND state = 'active'
+            FOR UPDATE
+            """,
+            (instrument,),
+        ).fetchone()
+        if not row or desired_trigger <= Decimal(row[1]):
+            return False
+        client.amend_algo_stop(
+            instrument,
+            row[0],
+            format(desired_trigger, "f"),
+            alphanumeric_id("tsamend"),
+        )
+        amended = client.algo_order(row[0])
+        actual_trigger = Decimal(amended["slTriggerPx"])
+        if actual_trigger < desired_trigger:
+            raise RuntimeError(
+                f"exchange stop did not reach requested trigger: "
+                f"{actual_trigger} < {desired_trigger}"
+            )
+        connection.execute(
+            """
+            UPDATE protective_order
+            SET trigger_price = %s, updated_at = NOW()
+            WHERE instrument = %s
+            """,
+            (actual_trigger, instrument),
+        )
+        connection.commit()
+        logging.info(
+            "profit protection raised instrument=%s trigger=%s",
+            instrument,
+            actual_trigger,
+        )
+        return True
 
 
 def close_owned_position(
@@ -933,8 +1071,11 @@ def close_owned_position(
                 (instrument,),
             )
             connection.commit()
-        mark_experiment_unreconciled(
-            database, instrument, "position absent outside controller exit"
+        reconcile_missing_position(
+            client,
+            database,
+            managed,
+            "position absent without a recoverable controller exit",
         )
         return
     owned = min(
@@ -1335,8 +1476,11 @@ def manage_position(
                 (instrument,),
             )
             connection.commit()
-        mark_experiment_unreconciled(
-            database, instrument, "aggregate position disappeared"
+        reconcile_missing_position(
+            client,
+            database,
+            managed,
+            "aggregate position disappeared without a recoverable exit",
         )
         return "position_missing"
     if not protection_live:
@@ -1397,6 +1541,47 @@ def manage_position(
             "external position reduction detected",
         )
         return "external_reduction_exit"
+    with database.connect() as connection:
+        experience = connection.execute(
+            """
+            SELECT max_favorable_pct FROM live_experiment
+            WHERE entry_order_id = %s AND status = 'open'
+            """,
+            (managed["entry_order_id"],),
+        ).fetchone()
+    desired_profit_stop = (
+        profit_protection_price(
+            Decimal(managed["average_price"]),
+            Decimal(experience[0]),
+            Decimal(details["tickSz"]),
+        )
+        if experience
+        else None
+    )
+    if desired_profit_stop is not None:
+        mark_price = Decimal(
+            aggregate.get("markPx") or aggregate.get("last")
+        )
+        if mark_price <= desired_profit_stop:
+            close_owned_position(
+                settings,
+                client,
+                database,
+                executor,
+                managed,
+                account,
+                positions,
+                details,
+                candidate["parameters"] if candidate else {},
+                "profit protection breached",
+            )
+            return "profit_protection_exit"
+        raise_profit_protection(
+            client,
+            database,
+            instrument,
+            desired_profit_stop,
+        )
     if not candidate:
         close_owned_position(
             settings,

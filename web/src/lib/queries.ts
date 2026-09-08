@@ -16,6 +16,8 @@ export type Position = {
   leverage: string | null;
   notional_usd: string | null;
   unrealized_pnl: string | null;
+  unrealized_pnl_ratio: string | null;
+  margin: string | null;
   liquidation_price: string | null;
   margin_mode: string | null;
   system_strategy: string | null;
@@ -156,7 +158,8 @@ export async function dashboardData() {
       ? query<Position>(
           `SELECT p.instrument, p.side, p.size, p.average_price,
              p.mark_price, p.leverage, p.notional_usd, p.unrealized_pnl,
-             p.liquidation_price, p.margin_mode,
+             p.unrealized_pnl_ratio, p.margin, p.liquidation_price,
+             p.margin_mode,
              l.strategy AS system_strategy,
              l.strategy_parameters,
              l.owned_quantity AS system_quantity,
