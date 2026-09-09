@@ -31,5 +31,7 @@ SQL
 
 docker exec -i -e PGPASSWORD="$TRADING_PG_PASSWORD" "$DB_CONTAINER" \
   psql -h localhost -U trading_system -d trading_system < "$PROJECT_DIR/db/schema.sql"
+docker exec -i -e PGPASSWORD="$TRADING_PG_PASSWORD" "$DB_CONTAINER" \
+  psql -v ON_ERROR_STOP=1 -h localhost -U trading_system -d trading_system \
+  < "$PROJECT_DIR/db/portfolio-settings.sql"
 echo "trading_system bootstrap complete"
-

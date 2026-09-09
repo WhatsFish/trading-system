@@ -12,6 +12,7 @@ import uuid
 from .config import Settings
 from .okx import OkxClient, OkxError
 from .universe import BY_INSTRUMENT
+from .portfolio import PortfolioAccount, load_portfolio, pending_entries
 
 if TYPE_CHECKING:
     from .database import Database
@@ -49,6 +50,12 @@ def validate_intent(
     minimum_size: Decimal,
     authorized_entry_notional: Decimal | None = None,
 ) -> None:
+    if any(not value.is_finite() or value <= 0 for value in (
+        intent.size, last_price, lot_size, minimum_size,
+        *([intent.price] if intent.price is not None else []),
+        *([authorized_entry_notional] if authorized_entry_notional is not None else []),
+    )):
+        raise ValueError("order values must be finite and positive")
     if intent.instrument not in BY_INSTRUMENT:
         raise ValueError("instrument is outside the equity allowlist")
     if intent.action not in {"buy", "sell"}:
@@ -96,6 +103,28 @@ class Executor:
         self.database = database
 
     def submit(self, intent: OrderIntent) -> str:
+        if intent.action != "buy":
+            return self._submit(intent)
+        # Session locks survive the durable requesting-audit commit. A save
+        # cannot change the revision between authorization and exchange submit.
+        with self.database.connect() as lock_connection:
+            # A controller may already hold a shared lock on another connection.
+            # Never queue behind a writer that is waiting for that controller.
+            acquired = lock_connection.execute(
+                "SELECT pg_try_advisory_lock_shared(884424)"
+            ).fetchone()[0]
+            if not acquired:
+                raise PermissionError("portfolio settings update in progress")
+            try:
+                lock_connection.execute("SELECT pg_advisory_lock(884425)")
+                try:
+                    return self._submit(intent)
+                finally:
+                    lock_connection.execute("SELECT pg_advisory_unlock(884425)")
+            finally:
+                lock_connection.execute("SELECT pg_advisory_unlock_shared(884424)")
+
+    def _submit(self, intent: OrderIntent) -> str:
         details = self.client.instrument(intent.instrument)
         ticker = self.client.ticker(intent.instrument)
         with self.database.connect() as connection:
@@ -139,7 +168,7 @@ class Executor:
                     return recovered["ordId"]
             risk = connection.execute(
                 """
-                SELECT r.approved, s.instrument, s.action, r.proposed_notional
+                SELECT r.approved, s.instrument, s.action, r.proposed_notional, r.limits
                 FROM risk_decision r
                 JOIN strategy_signal s ON s.id = r.signal_id
                 WHERE r.id = %s
@@ -154,6 +183,28 @@ class Executor:
                 or risk[2] != intent.action
             ):
                 raise PermissionError("fresh matching approved risk decision required")
+            portfolio_revision = None
+            if intent.action == "buy":
+                portfolio = load_portfolio(connection)
+                portfolio_revision = portfolio.revision
+                if risk[4].get("portfolioRevision") != str(portfolio.revision):
+                    raise PermissionError("portfolio revision changed or missing")
+                managed = connection.execute(
+                    "SELECT instrument FROM live_position WHERE owned_quantity > 0"
+                ).fetchall()
+                account = PortfolioAccount.from_exchange(
+                    self.client.account_balance(), self.client.positions(),
+                    (row[0] for row in managed),
+                    pending_entries(connection, intent.client_order_id)
+                    or bool(self.client.pending_orders()),
+                )
+                limit, reasons = account.entry_limit(
+                    portfolio, intent.instrument,
+                    self.settings.max_position_pct,
+                    self.settings.max_total_exposure_pct,
+                )
+                if reasons or intent.price is None or intent.size * intent.price > limit:
+                    raise PermissionError(f"portfolio entry blocked: {','.join(reasons) or 'notional_limit'}")
             validate_intent(
                 intent,
                 self.settings,
@@ -166,6 +217,7 @@ class Executor:
             audit_detail = json.dumps(
                 {
                     "riskDecisionId": intent.risk_decision_id,
+                    "portfolioRevision": portfolio_revision,
                     "stopClientOrderId": intent.stop_client_order_id,
                     "stopTriggerPrice": (
                         str(intent.stop_trigger_price)

@@ -2,6 +2,9 @@ import Link from "next/link";
 import { Disclaimer } from "@/components/Disclaimer";
 import { dashboardData } from "@/lib/queries";
 import { strategyCopy, ui, type Lang } from "@/lib/strategy-copy";
+import { pool } from "@/lib/db";
+import { readConfig } from "@/lib/portfolio-store";
+import { positionLimit } from "@/lib/portfolio";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 30;
@@ -17,6 +20,9 @@ export default async function TradingDashboard({
   const lang: Lang = searchParams?.lang === "en" ? "en" : "zh";
   const t = ui[lang];
   const data = await dashboardData();
+  let portfolio: Awaited<ReturnType<typeof readConfig>> | null = null;
+  try { portfolio = await readConfig(pool); }
+  catch { console.error("Dashboard portfolio settings unavailable"); }
   const {
     account,
     positions,
@@ -41,7 +47,6 @@ export default async function TradingDashboard({
     if (!position.system_quantity) return sum;
     return sum + Number(position.system_quantity) * Number(position.mark_price ?? 0);
   }, 0);
-  const estimatedBudget = equity * 0.18;
   const scanByKey = new Map(
     (liveState?.scan ?? []).map((item) => [
       `${item.symbol}:${item.family}`,
@@ -85,6 +90,9 @@ export default async function TradingDashboard({
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <Link className="text-sm underline" href={`/settings?lang=${lang}`}>
+            {lang === "zh" ? "持仓与资金设置" : "Holdings & budgets"}
+          </Link>
           <div
             className={`rounded-full px-3 py-1 text-xs font-medium ${
               stale
@@ -125,8 +133,9 @@ export default async function TradingDashboard({
           value={`${number(String(systemExposure), 2)} USDT`}
           sub={`${equity > 0 ? ((systemExposure / equity) * 100).toFixed(1) : "0.0"}%`}
         />
-        <Metric label={t.slots} value={`${liveState?.managed_count ?? 0} / 5`} />
+        <Metric label={t.slots} value={`${liveState?.managed_count ?? 0} / ${portfolio?.config.maxHoldings ?? "—"}`} />
       </section>
+      {!portfolio && <p role="alert" className="mb-4 text-red-600">{lang === "zh" ? "持仓设置不可用；预算未知，新开仓应被阻止。" : "Portfolio settings unavailable; budgets unknown and new entries should be blocked."}</p>}
 
       <Section title={t.positions}>
         {positions.length === 0 ? (
@@ -276,7 +285,8 @@ export default async function TradingDashboard({
                     </div>
                     <div className="text-right">
                       <p className="text-sm font-semibold">{t.estimated}</p>
-                      <p className="text-emerald-600">≈ {estimatedBudget.toFixed(2)} USDT</p>
+                      <p className="text-emerald-600">≤ {portfolio ? positionLimit(portfolio.config, equity, `${candidate.symbol}-USDT-SWAP`, portfolio.revision).toFixed(2) : "—"} USDT</p>
+                      <p className="text-xs text-neutral-500">{lang === "zh" ? "单仓上限，另受可用总预算约束" : "Per-position ceiling; aggregate cash limits also apply"}</p>
                     </div>
                   </div>
                   <p className="mt-3 text-sm">

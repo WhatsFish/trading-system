@@ -29,8 +29,8 @@ regular session; 24/7 availability does not imply 24/7 liquidity.
 
 ## Execution boundary
 
-There is no order placement, transfer, borrowing, earning, or withdrawal code
-in the deployed worker. Future order execution must be a separate adapter with:
+The observer and live controller are separate services. The live controller's
+execution adapter includes:
 
 - idempotent client order IDs
 - reduce-only support and explicit position-side handling
@@ -154,8 +154,8 @@ The adapter's transport was verified using real GOOGL minimum-size post-only
 orders at roughly half the bid; each was canceled and reconciled without a
 fill.
 
-Live activation uses a separate controller service. It may manage at most one
-position and tracks its exact filled quantity separately from the aggregate
+Live activation uses a separate controller service. It defaults to five
+holdings and tracks exact filled quantities separately from the aggregate
 OKX position. Entries are IOC limit orders capped by their maximum fill price
 and include an attached 5% mark-price stop in the same exchange request.
 Strategy exits retain that stop until the reduce-only exit is confirmed.
@@ -176,13 +176,14 @@ When portfolio capacity is available, the controller scans the best eligible
 candidate per symbol every minute in descending risk-adjusted score order. It
 recalculates each candidate's current long/flat target, skips flat candidates,
 and continues past candidate-specific risk blocks until it finds the first
-approved long targets until five slots are filled. It caps both asset groups
-and strategy clusters at two positions.
+approved long targets until the configured slots (default five) are filled. Asset
+group and strategy cluster caps default to two positions and are configurable.
 
-The experimental account sizing policy authorizes up to 18% of current equity
-per 1x isolated position and caps total account nominal exposure at 200% of
+The default experimental account sizing policy authorizes up to 18% of current equity
+per 1x isolated position; confirmed portfolio budgets can override this entry
+size. It caps total account nominal exposure at 200% of
 equity, including manual positions. New entries stop after a 10% daily equity
-loss or 20% peak-to-current drawdown. A full five-position portfolio replaces
+loss or 20% peak-to-current drawdown. A full, within-budget portfolio replaces
 at most one incumbent per cycle: the challenger must exceed the weakest entry
 score by 10 points, the incumbent must be at least one day old, and the exact
 challenger is reserved and revalidated before entry.
@@ -195,6 +196,174 @@ gets a deterministic postmortem with net PnL, costs, exit reason, and lesson
 codes. After at least five closed experiments in the same symbol/strategy
 family, their average return and loss rate receive a bounded weight in future
 candidate scoring; smaller samples are recorded but cannot change rankings.
+
+## Versioned portfolio settings
+
+`db/portfolio-settings.sql` is an explicitly operator-applied, transactional,
+idempotent migration. No application startup runs migrations. It adds:
+
+- `portfolio_settings`: singleton `id=1`, typed/validated JSON and integer revision;
+- `portfolio_settings_history`: one immutable application-written history row
+  per revision, actor, previous/new configuration and confirmed preview;
+- `portfolio_settings_preview`: hashed, random single-use tokens, actor, expected
+  revision, proposed configuration, account snapshot, expiry and consumption.
+
+The application never updates/deletes history. A database administrator can
+still modify these tables; this is an application audit trail, not a
+cryptographically tamper-proof ledger. Preview records persist for audit/debug
+purposes; no new scheduled retention job is installed.
+
+### Budget semantics
+
+All money inputs are finite numeric **USDT notional**, from zero to 1 billion;
+position amounts must be positive, percentages `(0,100]`, and maximum holdings,
+`maxPerAssetGroup` and `maxPerStrategyCluster` integers `[1,50]`. Group and
+cluster caps default to two. The four asset groups therefore allow at most
+eight holdings by default: explicitly choosing nine requires a group cap of at
+least three and sufficiently permissive cluster caps. Signals and available
+cash may still limit actual holdings. Raising caps increases concentration
+risk; lowering caps restricts new/replacement candidates without selling holdings.
+Aggregate exposure remains limited to 200% of actual equity. Unknown fields,
+modes and instruments are rejected.
+
+Let `E` be actual total equity, `A` actual available USDT, `R` reserve, and `X`
+gross absolute notional exposure across all account positions (including
+manual/unmanaged instruments). Equity's existing USD valuation is treated as
+USDT-equivalent, consistently with the legacy engine; there is no FX conversion.
+
+| Total mode | Percentage base `B` | Aggregate ceiling after reserve `T` |
+| --- | --- | --- |
+| `legacy_equity` (default) | `E` | `max(0, 2E - R)` |
+| `account_equity` | `E` | `max(0, E - R)` |
+| `fixed_usdt` | `min(requested USDT, E)` | `max(0, B - R)` |
+
+For confirmed settings (revision > 0), an instrument's ceiling is
+`min(B, fixed USDT or B × percentage / 100)`. An instrument override replaces
+the default budget for that instrument. Explicit budgets may exceed the default
+18%; unsaved revision 0 retains the legacy 18%-of-equity ceiling.
+Its actual new-entry authorization is no more than
+`max(0, min(instrument ceiling, T-X, A-R))`, and is further bounded by existing
+strategy confidence, reference, circuit-breaker, price and lot-size checks.
+Ceilings are upper bounds, not allocations or target weights.
+
+Example: equity 100, fixed total 30, reserve 5, per-position 18% yields a
+percentage base of 30, position ceiling 5.40 and aggregate deployable ceiling
+25 USDT. Total 300 with equity 100 is clamped to 100, not additional capital.
+With equity 100 and the account-equity total mode, a confirmed fixed
+per-position budget of 30 authorizes up to 30, or 50% authorizes up to 50,
+subject to cash, remaining aggregate budget and confidence. Neither borrows
+funds nor changes leverage.
+
+Available cash is an additional independent limit even in legacy mode. Entries
+remain 1x isolated IOC with bounded limit prices; rounding is downward, and
+budgets too small for exchange minimum size produce no order. Replacement
+preflight uses the same bounded price and lot-rounded size before authorizing
+an incumbent sale; it does not set leverage or submit any exchange mutation.
+Market/account changes after a preflight can still prevent the subsequent entry.
+Budget sizing
+does not model a fixed exchange fee rate; reserve additional USDT for fees and
+funding. Market appreciation, funding and fees can move holdings beyond a
+ceiling after entry; the system does not force them back to a target weight.
+
+### Runtime and concurrency
+
+The controller loads one immutable settings revision per cycle. A shared
+configuration advisory lock `884424` spans the entire cycle, so a confirmation
+cannot change budgets between replacement preflight, an ordinary exit, and a
+new entry. The existing portfolio-controller lock `884423` remains unchanged.
+Settings saves use the exclusive transaction form of `884424`; requests time
+out after 15 seconds rather than waiting indefinitely for a long cycle.
+On timeout or HTTP uncertainty, reload settings/history before retrying.
+
+Each entry's risk decision records `limits.portfolioRevision`. The executor
+requires that same current revision, re-reads account/cash/positions, enforces
+the portfolio ceiling again and writes the revision into `execution_audit`.
+Recovered experiments copy that revision into `entry_context`. Entry submissions
+also serialize on `884425`; this session lock remains held across the durable
+`requesting` audit commit and the exchange request. Independent reduce-only
+exits do not depend on settings loading or these entry locks.
+The executor's additional shared configuration lock is nonblocking: it rejects
+an entry rather than queuing behind a writer waiting for the controller's
+shared lock on another connection.
+
+Holdings count the union of live account instruments and still-owned managed
+instruments. Manual exposure consumes budget and holding slots but is never
+automatically sold. An unreconciled managed holding missing from the account
+view, unresolved entry audit, or any ordinary exchange pending order blocks
+new entries conservatively until reconciliation. Partial fills are not assumed
+to free budget. Filled entries refresh account and positions before scanning
+the next candidate; the executor independently refreshes again immediately
+before each submit.
+
+Lowering below the current count/total ceiling blocks new entries and
+replacement attempts, with no liquidation. Once a configuration has explicitly
+been confirmed (revision > 0), any existing instrument above its current
+per-instrument ceiling also blocks new/increasing exposure and replacement
+preflights. This is deliberately a global entry freeze, including natural
+mark-price appreciation or an equity decline, even on a first save that merely
+raises maximum holdings to six. The preview lists all over-budget instruments
+and warns before confirmation. Raise their budgets explicitly or wait for
+normal exits/account changes; settings never liquidate them to restore compliance.
+Unsaved revision 0 retains legacy appreciation behavior for the
+18% single-entry ceiling. Normal signal exits and protective stops continue.
+No new strategy add/reduce, rebalance, or portfolio optimization logic is added.
+
+Missing tables are treated as unactivated revision-0 legacy configuration by
+the worker, and read-only defaults by the portal. A missing singleton in an
+existing table, malformed configuration, invalid account metrics or a settings
+read failure cannot become a permissive entry fallback. The controller reports
+the settings error in its heartbeat and still runs protective management.
+
+### Portal confirmation and activation
+
+The route `/trading/api/portfolio-settings` rechecks Basic credentials itself,
+in addition to middleware. Mutations require JSON plus an exact Origin matching
+the request Host and proxy protocol; cross-site Fetch Metadata is rejected.
+The existing trusted nginx proxy must preserve Host and set
+`X-Forwarded-Proto`. Missing authentication configuration fails closed.
+Passwords, Basic headers and database errors are never returned or audited.
+Responses are `no-store`.
+
+POST `action=preview` validates server-side and records the proposed settings,
+not an activation. Confirmation requires a server-issued, unexpired token bound
+to the authenticated actor, matching expected revision and explicit
+`CONFIRM_PORTFOLIO_LIMITS` acknowledgement. Proposed settings on a confirmation
+payload are ignored; only the persisted validated preview can be saved.
+A conditional revision update, history insert and token consumption share one
+transaction. Concurrent editors, reused/expired tokens and invalid values
+cannot silently overwrite a revision.
+
+The preview shows current/proposed limits, current exposure and holdings,
+reserve, effective capital and warnings. Its stored summary includes the original
+configuration and the union of old/new instrument overrides, so removal visibly
+compares the old override with the newly effective default. Confirmation still
+uses only the server-stored preview, never edited client-side values.
+Account data must be at most three
+minutes old. Confirmation must still see the same snapshot and account state;
+the preview expires after ten minutes or sooner when state/revision changes.
+Reload/preview again on conflict. The UI explicitly warns about real orders
+on a subsequent enabled cycle, over-budget holdings, insufficient funds and
+the absence of automatic liquidation.
+
+Development does **not** migrate a live database, deploy code, alter execution
+gates, change secrets, or activate a sixth holding. Before operator activation,
+validate the migration in an isolated database and deploy both the reviewed
+worker and web images under a safe, entry-disabled rollout. Confirm that the
+new controller reports revision 0 before allowing portal edits. Old images
+ignore this feature; applying a migration alone does not enforce budgets.
+To restore settings, preview/confirm the old values as a **new revision**, never
+edit history. Do not roll back to an old worker that ignores tighter budgets
+while entries are enabled.
+
+Unit tests use in-memory SQL/exchange mocks, not production services. They verify
+runtime wiring, limits, revision checks, actor-bound previews, replay/conflict
+rejection and transaction rollback on audit failure. The separate
+[PostgreSQL acceptance suite](portfolio-postgres-acceptance.md) exercises actual
+migrations, store queries, atomic rollback, concurrent confirmations and advisory
+locks against a disposable database. Neither suite submits exchange orders.
+The portal does not call trading APIs, so externally placed pending
+orders may only be discovered by the executor; manual trading outside these
+locks and exchange eventual consistency cannot be made atomic by a web preview.
 External/manual quantity changes mark an experiment unreconciled and exclude
 it from learning rather than fabricating missing fills or fees.
 

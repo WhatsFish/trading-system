@@ -14,6 +14,7 @@ from .config import Settings
 from .executor import Executor, OrderIntent, floor_step
 from .okx import OkxClient, OkxError
 from .risk import evaluate
+from .portfolio import PortfolioAccount, PortfolioSettings, load_portfolio, pending_entries
 from .strategy import Signal
 from .strategy_library import StrategySpec, generate_targets
 from .universe import BY_INSTRUMENT
@@ -69,14 +70,15 @@ def portfolio_candidate_allowed(
     held_symbols: set[str],
     cluster_counts: Counter,
     group_counts: Counter,
+    portfolio: PortfolioSettings | None = None,
 ) -> bool:
     symbol = candidate["symbol"]
     instrument = f"{symbol}-USDT-SWAP"
     return (
         symbol not in held_symbols
         and instrument in BY_INSTRUMENT
-        and cluster_counts[candidate["cluster"]] < 2
-        and group_counts[BY_INSTRUMENT[instrument].group] < 2
+        and cluster_counts[candidate["cluster"]] < (portfolio.max_per_strategy_cluster if portfolio else 2)
+        and group_counts[BY_INSTRUMENT[instrument].group] < (portfolio.max_per_asset_group if portfolio else 2)
     )
 
 
@@ -257,6 +259,8 @@ def record_decision(
     positions: list[dict],
     details: dict,
     candidate_context: dict | None = None,
+    portfolio: PortfolioSettings | None = None,
+    replacement: bool = False,
 ) -> tuple[int, bool, tuple[str, ...], Decimal]:
     with database.connect() as connection:
         stale, basis, event_risk = database.latest_reference_risk(
@@ -266,6 +270,20 @@ def record_decision(
             connection, account, positions
         )
         enabled = database.execution_enabled(connection)
+        portfolio_account = None
+        portfolio_error = None
+        if action == "buy":
+            try:
+                if portfolio is None:
+                    raise ValueError("cycle portfolio settings missing")
+                managed = load_managed_positions(connection)
+                portfolio_account = PortfolioAccount.from_exchange(
+                    account, positions,
+                    (item["instrument"] for item in managed),
+                    pending_entries(connection),
+                )
+            except ValueError as error:
+                portfolio_error = str(error)
         signal_result = Signal(
             action=action,
             confidence=Decimal("1"),
@@ -293,6 +311,11 @@ def record_decision(
             stale,
             basis,
             event_risk,
+            portfolio=portfolio,
+            portfolio_account=portfolio_account,
+            instrument=instrument,
+            portfolio_error=portfolio_error,
+            replacement=replacement,
         )
         decision_id = database.save_signal_and_risk(
             connection,
@@ -430,6 +453,7 @@ def recover_incomplete_entries(
                                 "referenceStale": bool(basis[3]) if basis else True,
                                 "recentNewsCount": recent_news,
                                 "riskDecisionId": detail.get("riskDecisionId"),
+                                "portfolioRevision": detail.get("portfolioRevision"),
                                 "stopTriggerPrice": detail.get("stopTriggerPrice"),
                             }
                         ),
@@ -1261,6 +1285,21 @@ def load_candidates(connection, managed: dict | None) -> list[dict]:
     ]
 
 
+def bounded_entry_size(
+    authorized_notional: Decimal, ticker: dict, details: dict,
+) -> tuple[Decimal, Decimal]:
+    ask = Decimal(ticker["askPx"])
+    tick = Decimal(details["tickSz"])
+    lot = Decimal(details["lotSz"])
+    minimum = Decimal(details["minSz"])
+    if any(not value.is_finite() or value <= 0 for value in (authorized_notional, ask, tick, lot, minimum)):
+        raise ValueError("entry sizing values must be finite and positive")
+    ceiling = floor_step(ask * (Decimal("1") + ENTRY_PRICE_BUFFER), tick)
+    if ceiling <= 0:
+        raise ValueError("entry price rounds to zero")
+    return ceiling, floor_step(authorized_notional / ceiling, lot)
+
+
 def attempt_entry(
     settings: Settings,
     client: OkxClient,
@@ -1270,6 +1309,7 @@ def attempt_entry(
     account: dict,
     positions: list[dict],
     execute: bool = True,
+    portfolio: PortfolioSettings | None = None,
 ) -> tuple[str, tuple[str, ...]]:
     instrument = f"{candidate['symbol']}-USDT-SWAP"
     if current_position(positions, instrument):
@@ -1292,25 +1332,19 @@ def attempt_entry(
         positions,
         details,
         candidate,
+        portfolio=portfolio,
+        replacement=not execute,
     )
     if not approved:
         logging.info(
             "live entry blocked instrument=%s reasons=%s", instrument, reasons
         )
         return "blocked", reasons
-    if not execute:
-        return "approved", ()
-
-    ceiling = floor_step(
-        Decimal(ticker["askPx"]) * (Decimal("1") + ENTRY_PRICE_BUFFER),
-        Decimal(details["tickSz"]),
-    )
-    size = floor_step(
-        authorized_notional / ceiling,
-        Decimal(details["lotSz"]),
-    )
+    ceiling, size = bounded_entry_size(authorized_notional, ticker, details)
     if size < Decimal(details["minSz"]):
         return "below_minimum_size", ()
+    if not execute:
+        return "approved", ()
     client.set_leverage(instrument, "1")
     client_id = alphanumeric_id("tsentry")
     stop_client_id = alphanumeric_id("tsstop")
@@ -1616,6 +1650,16 @@ def manage_position(
 def _run_cycle(
     settings: Settings, client: OkxClient, database: Database, executor: Executor
 ) -> None:
+    from psycopg import Error as DatabaseError
+
+    portfolio = None
+    portfolio_error = None
+    try:
+        with database.connect() as connection:
+            portfolio = load_portfolio(connection)
+    except (ValueError, DatabaseError) as error:
+        portfolio_error = type(error).__name__
+        logging.exception("portfolio settings unavailable; entries disabled")
     unresolved = recover_incomplete_entries(client, database)
     account = client.account_balance()
     positions = client.positions()
@@ -1635,6 +1679,8 @@ def _run_cycle(
                 "managedCount": len(managed_positions),
                 "unresolvedEntry": unresolved,
                 "candidatePoolSize": len(candidates),
+                "portfolioRevision": portfolio.revision if portfolio else None,
+                "portfolioError": portfolio_error,
             },
             worker="live-controller",
         )
@@ -1667,11 +1713,19 @@ def _run_cycle(
         enabled = database.execution_enabled(connection)
         reservation = load_replacement_reservation(connection)
         connection.commit()
-    if unresolved or not enabled:
+    if unresolved or not enabled or portfolio is None:
         return
 
     positions = client.positions()
     account = client.account_balance()
+    with database.connect() as connection:
+        budget_account = PortfolioAccount.from_exchange(
+            account, positions,
+            (item["instrument"] for item in managed_positions),
+            pending_entries(connection) or bool(client.pending_orders()),
+        )
+    if budget_account.pending:
+        return
     held_symbols = {
         item["instrument"].split("-", 1)[0] for item in managed_positions
     }
@@ -1679,13 +1733,13 @@ def _run_cycle(
         item["strategy_cluster"] for item in managed_positions
     )
     group_counts = Counter(item["asset_group"] for item in managed_positions)
-    slots = max(0, 5 - len(managed_positions))
+    slots = max(0, portfolio.max_holdings - len(budget_account.held))
     scan_results: list[dict] = []
     selected: list[str] = []
 
     # A full portfolio replaces at most one incumbent per cycle and only
     # after a one-day hold plus a meaningful score improvement.
-    if slots == 0 and managed_positions:
+    if slots == 0 and managed_positions and len(budget_account.held) == portfolio.max_holdings:
         replaceable = [
             item for item in managed_positions if item["replacement_eligible"]
         ]
@@ -1708,6 +1762,7 @@ def _run_cycle(
                     },
                     projected_clusters,
                     projected_groups,
+                    portfolio,
                 ):
                     continue
                 if not replacement_allowed(
@@ -1726,6 +1781,7 @@ def _run_cycle(
                     account,
                     positions,
                     execute=False,
+                    portfolio=portfolio,
                 )
                 scan_results.append(
                     {
@@ -1802,6 +1858,7 @@ def _run_cycle(
                             refreshed_held,
                             refreshed_clusters,
                             refreshed_groups,
+                            portfolio,
                         )
                     ):
                         clear_replacement_reservation(database)
@@ -1814,6 +1871,7 @@ def _run_cycle(
                         refreshed_reservation,
                         account,
                         positions,
+                        portfolio=portfolio,
                     )
                     scan_results.append(
                         {
@@ -1836,7 +1894,7 @@ def _run_cycle(
                 break
             symbol = candidate["symbol"]
             if not portfolio_candidate_allowed(
-                candidate, held_symbols, cluster_counts, group_counts
+                candidate, held_symbols, cluster_counts, group_counts, portfolio
             ):
                 continue
             instrument = f"{symbol}-USDT-SWAP"
@@ -1849,6 +1907,7 @@ def _run_cycle(
                 candidate,
                 account,
                 positions,
+                portfolio=portfolio,
             )
             scan_results.append(
                 {
@@ -1894,6 +1953,7 @@ def _run_cycle(
                 "selectedCandidates": selected,
                 "management": management_results,
                 "scan": scan_results[:50],
+                "portfolioRevision": portfolio.revision,
             },
             worker="live-controller",
         )
@@ -1911,8 +1971,10 @@ def run_cycle(
             logging.warning("another live controller owns the portfolio lock")
             return
         try:
+            lock_connection.execute("SELECT pg_advisory_lock_shared(884424)")
             _run_cycle(settings, client, database, executor)
         finally:
+            lock_connection.execute("SELECT pg_advisory_unlock_shared(884424)")
             lock_connection.execute("SELECT pg_advisory_unlock(884423)")
 
 

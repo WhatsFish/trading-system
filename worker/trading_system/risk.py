@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from .config import Settings
 from .strategy import Signal
+from .portfolio import PortfolioAccount, PortfolioSettings
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,11 @@ def evaluate(
     reference_stale: bool = True,
     basis_bps: Decimal | None = None,
     event_risk: bool = False,
+    portfolio: PortfolioSettings | None = None,
+    portfolio_account: PortfolioAccount | None = None,
+    instrument: str = "",
+    portfolio_error: str | None = None,
+    replacement: bool = False,
 ) -> RiskDecision:
     reasons: list[str] = []
     is_entry = signal.action == "buy"
@@ -41,6 +47,24 @@ def evaluate(
     )
     peak = peak_equity or equity
     drawdown = (peak - equity) / peak if peak > 0 else Decimal("1")
+    if is_entry and portfolio_error:
+        reasons.append("portfolio_settings_invalid")
+        proposed = Decimal("0")
+    if is_entry and portfolio is not None:
+        if portfolio_account is None:
+            reasons.append("portfolio_account_missing")
+            proposed = Decimal("0")
+        else:
+            ceiling, portfolio_reasons = portfolio_account.entry_limit(
+                portfolio, instrument, settings.max_position_pct,
+                settings.max_total_exposure_pct, replacement,
+            )
+            if portfolio.revision > 0:
+                proposed = portfolio.symbol_limit(
+                    instrument, equity, settings.max_position_pct,
+                ) * min(Decimal("1"), max(Decimal("0.5"), signal.confidence))
+            proposed = min(proposed, ceiling)
+            reasons.extend(portfolio_reasons)
 
     if settings.mode != "live":
         reasons.append("mode_is_observe")
@@ -76,6 +100,7 @@ def evaluate(
         proposed_notional=proposed,
         reasons=tuple(reasons),
         limits={
+            **({"portfolioRevision": str(portfolio.revision)} if portfolio else {}),
             "maxPositionPct": str(settings.max_position_pct),
             "maxTotalExposurePct": str(settings.max_total_exposure_pct),
             "maxLeverage": str(settings.max_leverage),

@@ -5,9 +5,9 @@ technology, semiconductor and healthcare names plus broad/sector ETFs, collects
 market and account data, evaluates session-aware deterministic strategies,
 enforces hard risk limits, and exposes a private dashboard.
 
-The default and deployed mode is `observe`: decisions are recorded, but no
-orders are sent. Live execution requires explicit code review, successful
-backtests, shadow operation, and two independent configuration gates.
+The collector defaults to `observe`: decisions are recorded without sending
+orders. The separate `live` controller can execute when both execution gates
+are enabled; do not assume an existing installation is locked.
 
 ## Architecture
 
@@ -83,7 +83,7 @@ can be changed without rebuilding or stopping account observation:
 ./scripts/live-on.sh
 ```
 
-The active policy allows up to five system-managed longs, each sized up to 18%
+The default policy allows up to five longs, each sized up to 18%
 of current equity, with 1x isolated leverage, an atomic attached 5% stop, and
 no short opening. At most two positions may share an asset group or strategy
 cluster. The executor enforces the exact notional authorized by each risk
@@ -97,3 +97,72 @@ next strategy-lab ranking.
 The live controller scans all eligible candidates once per minute, ordered by
 score. It recalculates current targets, skips flat candidates, and continues
 after candidate-specific risk blocks until one entry is approved.
+
+## Holdings and budget settings (operator-controlled activation)
+
+The bilingual portal at `/trading/settings?lang=en` (or `lang=zh`) supports:
+
+- maximum holdings from 1–50 (for example 5, 6, 7, 8, 9);
+- legacy equity limits, a 100%-of-account-equity budget, or a fixed USDT
+  total budget such as 30 or 300, clamped to actual account equity;
+- default and per-instrument notional budgets in fixed USDT or percent;
+- advanced per-asset-group and per-strategy-cluster caps from 1–50 (default 2);
+- a USDT cash reserve, current/proposed preview, explicit confirmation,
+  optimistic revision checks, and a recent audit history.
+
+Amounts are **notional, not margin**; leverage stays 1x with no borrowing.
+Confirmed budgets can increase individual positions beyond the default 18%
+(for example fixed 30 against equity 100), within actual equity, available
+cash and remaining total budget; the 200% aggregate risk guard still applies.
+Four asset groups at the default cap of two permit at most eight holdings:
+nine requires an explicit group cap of at least three, sufficient cluster caps,
+signals and cash.
+Existing holdings are never automatically resized or liquidated by a settings
+change. Protective stops and normal strategy exits remain active.
+After the first save, any existing mark exposure above its per-instrument
+budget freezes all new entries/replacements, including after appreciation or
+an equity decline—even if only maximum holdings was raised. The preview warns
+and lists affected holdings; settings do not rebalance.
+
+**Development of this feature does not activate a sixth holding.** No production
+migration, setting change, deployment, restart or order is part of development.
+For activation, the operator must review the branch and tests, arrange a safe
+rollout with new entries disabled, apply only `db/portfolio-settings.sql` to the
+intended database with PostgreSQL `ON_ERROR_STOP`, and deploy the reviewed worker
+and web images together. Do not run the full bootstrap just to upgrade an
+existing database (bootstrap also manages the database role). Verify controller
+health/revision before restoring any previously authorized entry gate.
+Then open the portal, preview the desired settings and explicitly confirm.
+An already-enabled controller may place real orders on its next cycle after
+confirmation; a saved revision is not evidence of a fill.
+
+The migration seeds revision 0 with **5 / 18% / legacy 200% aggregate guard /
+two per group and cluster / zero reserve**, without changing execution gates. Missing migration preserves
+worker legacy defaults and makes portal saving unavailable. Invalid stored
+configuration blocks entries, not protective management.
+
+See [portfolio settings architecture](docs/architecture.md#versioned-portfolio-settings)
+for formulas, fail-closed behavior, concurrency, rollout/rollback and limitations.
+
+Focused checks (no database or exchange required):
+
+```bash
+PYTHONPATH=worker:worker/tests python3 -m unittest \
+  test_portfolio test_risk test_executor test_live_controller -v
+cd web
+npm run typecheck
+./node_modules/.bin/tsc --module commonjs --moduleResolution node --target es2020 \
+  --esModuleInterop --skipLibCheck --outDir .portfolio-test-build tests/portfolio.test.ts
+node --test .portfolio-test-build/tests/portfolio.test.js
+# Run build after typecheck, never concurrently against .next:
+NEXT_TELEMETRY_DISABLED=1 PG_HOST=127.0.0.1 PG_PORT=1 npm run build
+```
+
+The Node checks use the built-in test runner and installed TypeScript, with
+mocked SQL transactions. Generated `.portfolio-test-build` files are disposable
+and must not be committed. They do not constitute a production database
+migration or exchange integration test.
+
+For actual migration, transaction and advisory-lock coverage, run the
+[isolated PostgreSQL acceptance suite](docs/portfolio-postgres-acceptance.md).
+It uses a disposable database and never connects to the production account.

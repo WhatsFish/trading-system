@@ -1,6 +1,6 @@
 import { Pool, type QueryResultRow } from "pg";
 
-const pool = new Pool({
+export const pool = new Pool({
   host: process.env.PG_HOST ?? "db",
   port: parseInt(process.env.PG_PORT ?? "5432", 10),
   user: process.env.PG_USER ?? "trading_system",
@@ -16,4 +16,3 @@ export async function query<T extends QueryResultRow>(
   const result = await pool.query<T>(sql, values);
   return result.rows;
 }
-

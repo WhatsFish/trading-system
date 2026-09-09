@@ -159,6 +159,9 @@ class OkxClient:
     def positions(self) -> list[dict]:
         return self.request("GET", "/api/v5/account/positions", private=True)
 
+    def pending_orders(self) -> list[dict]:
+        return self.request("GET", "/api/v5/trade/orders-pending", private=True)
+
     def place_order(self, order: dict) -> dict:
         rows = self.request(
             "POST", "/api/v5/trade/order", body=order, private=True
