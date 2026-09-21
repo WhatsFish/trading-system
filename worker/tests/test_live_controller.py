@@ -2,9 +2,11 @@ import unittest
 import datetime as dt
 from collections import Counter
 from decimal import Decimal
+from unittest.mock import MagicMock
 
 from trading_system.live_controller import (
     desired_action,
+    finalize_experiment,
     portfolio_candidate_allowed,
     profit_protection_price,
     replacement_allowed,
@@ -79,6 +81,34 @@ class LiveControllerTests(unittest.TestCase):
             ),
             Decimal("106.44"),
         )
+
+    def test_finalize_experiment_omits_optional_id_filter_when_unspecified(self) -> None:
+        database = MagicMock()
+        connection = database.connect.return_value.__enter__.return_value
+        connection.execute.return_value.fetchone.return_value = None
+
+        finalize_experiment(database, "WDC-USDT-SWAP", {}, "position closed")
+
+        query, params = connection.execute.call_args.args
+        self.assertNotIn("id = %s", query)
+        self.assertEqual(params, ("WDC-USDT-SWAP",))
+
+    def test_finalize_experiment_filters_by_id_when_specified(self) -> None:
+        database = MagicMock()
+        connection = database.connect.return_value.__enter__.return_value
+        connection.execute.return_value.fetchone.return_value = None
+
+        finalize_experiment(
+            database,
+            "TSM-USDT-SWAP",
+            {},
+            "position closed",
+            experiment_id=42,
+        )
+
+        query, params = connection.execute.call_args.args
+        self.assertIn("AND id = %s", query)
+        self.assertEqual(params, ("TSM-USDT-SWAP", 42))
 
 
 if __name__ == "__main__":

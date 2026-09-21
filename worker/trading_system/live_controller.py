@@ -565,24 +565,29 @@ def finalize_experiment(
     reason: str,
     experiment_id: int | None = None,
 ) -> None:
-    from psycopg.types.json import Jsonb
-
     with database.connect() as connection:
+        experiment_filter = ""
+        query_params: tuple[str, int] | tuple[str] = (instrument,)
+        if experiment_id is not None:
+            experiment_filter = "AND id = %s"
+            query_params = (instrument, experiment_id)
         row = connection.execute(
-            """
+            f"""
             SELECT id, entry_quantity, entry_price, entry_fee,
                    max_favorable_pct, max_adverse_pct
             FROM live_experiment
             WHERE instrument = %s
               AND status IN ('open', 'closed_unreconciled')
-              AND (%s IS NULL OR id = %s)
+              {experiment_filter}
             ORDER BY entry_time DESC LIMIT 1
             FOR UPDATE
             """,
-            (instrument, experiment_id, experiment_id),
+            query_params,
         ).fetchone()
         if not row:
             return
+        from psycopg.types.json import Jsonb
+
         fill_time = int(
             exit_order.get("fillTime")
             or exit_order.get("uTime")
