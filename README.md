@@ -189,3 +189,22 @@ Recovered net PnL includes recorded entry/exit fees but excludes funding.
 This repairs historical accounting, not strategy profitability or missing
 funding attribution. It does not modify live positions, protection orders,
 portfolio limits or execution gates.
+
+## Allocation preview
+
+The bilingual `/trading/allocation` page compares existing managed holdings
+with their configured per-instrument budget ceilings and pinned strategy
+signals. It is a read-only scenario, not an investment recommendation or an
+order screen. Budget ceilings are not strategy-derived target weights.
+
+When the combined increases exceed available cash or remaining total budget,
+the page distributes that pool proportionally across the gaps instead of
+allocating a full budget to every row. Hypothetical reductions do not fund
+increases before an actual sale. Missing/stale data, uncertain ownership and
+configuration/controller mismatches are shown explicitly.
+
+No new scoring model, profitability prerequisite, automatic averaging down or
+rebalancing is introduced. The current database does not persist exchange lot
+and minimum order sizes, so live quantity estimates are unavailable rather
+than inferred. Amounts are illustrative and exclude execution slippage and
+fees; no orders are submitted and no settings are saved by this page.

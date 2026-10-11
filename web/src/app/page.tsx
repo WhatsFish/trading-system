@@ -90,6 +90,9 @@ export default async function TradingDashboard({
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <Link className="text-sm underline" href={`/allocation?lang=${lang}`}>
+            {lang === "zh" ? "配置预览" : "Allocation preview"}
+          </Link>
           <Link className="text-sm underline" href={`/settings?lang=${lang}`}>
             {lang === "zh" ? "持仓与资金设置" : "Holdings & budgets"}
           </Link>
