@@ -166,3 +166,26 @@ migration or exchange integration test.
 For actual migration, transaction and advisory-lock coverage, run the
 [isolated PostgreSQL acceptance suite](docs/portfolio-postgres-acceptance.md).
 It uses a disposable database and never connects to the production account.
+
+## Historical experience reconciliation
+
+An old `open` experiment without a matching managed entry can be inspected
+using exact entry/exit order evidence:
+
+```bash
+python -m trading_system.reconcile_experiment \
+  --experiment-id <experiment-id> --exit-order-id <exchange-exit-order-id>
+```
+
+Run in the configured worker environment. The default only previews the result.
+Adding `--apply` writes the experience ledger, never an exchange order. It checks
+both exchange orders, client IDs, full filled quantity, USDT fees, entry price,
+the next-entry time boundary, and the exact system exit audit. It rejects active
+managed entries, partial/ambiguous exits, rebated fees and conflicting ledger
+attributions. A controller advisory lock prevents overlapping ownership changes;
+retry later if busy. Already closed experiments are not modified.
+
+Recovered net PnL includes recorded entry/exit fees but excludes funding.
+This repairs historical accounting, not strategy profitability or missing
+funding attribution. It does not modify live positions, protection orders,
+portfolio limits or execution gates.
